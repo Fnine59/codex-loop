@@ -1,0 +1,18 @@
+{
+  "name": "codex-loop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run a prompt repeatedly in the same Codex session.",
+  "type": "module",
+  "bin": {
+    "codex-loop": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "lint": "node --check src/*.js test/*.js",
+    "check": "npm run lint && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
