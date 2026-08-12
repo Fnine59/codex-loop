@@ -1,7 +1,7 @@
 {
   "name": "codex-loop",
-  "version": "0.2.0+codex.20260812173641",
-  "description": "Repeat work at an interval inside the current Codex conversation.",
+  "version": "0.2.0+codex.20260812200904",
+  "description": "Repeat work on adaptive or Cron schedules inside the current Codex conversation.",
   "author": {
     "name": "Fnine59",
     "url": "https://github.com/Fnine59"
@@ -12,13 +12,15 @@
     "codex",
     "loop",
     "automation",
-    "hooks"
+    "hooks",
+    "cron",
+    "app-server"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Loop",
-    "shortDescription": "Run timed loops in the current Codex conversation.",
-    "longDescription": "Start, continue, complete, or interrupt repeated Codex work without a daemon, cron job, remote thread, or secondary session.",
+    "shortDescription": "Run adaptive and Cron loops in the current conversation.",
+    "longDescription": "Repeat Codex work in the same conversation with an interactive App Server mode and a compatible synchronous Stop-hook fallback, without system Cron or a second session.",
     "developerName": "Fnine59",
     "category": "Productivity",
     "capabilities": [

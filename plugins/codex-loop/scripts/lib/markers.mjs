@@ -7,6 +7,7 @@ import {
   MIN_INTERVAL_MS,
   parseDuration,
 } from "./duration.mjs";
+import { normalizeCronExpression } from "./cron.mjs";
 
 const START_PATTERN = /<!--\s*codex-loop:v1:start:([a-f0-9]{12})\s*-->/g;
 const CONTROL_PATTERN = /<!--\s*codex-loop:v1:(stop|complete)(?::([a-f0-9]{12}))?\s*-->/g;
@@ -37,6 +38,20 @@ export function validateStartConfig(config) {
     config.intervalMs > MAX_INTERVAL_MS
   )) {
     throw new Error("Invalid loop interval.");
+  }
+  const cronExpression = config.cronExpression ?? null;
+  if (cronExpression !== null) {
+    if (typeof cronExpression !== "string" || normalizeCronExpression(cronExpression) !== cronExpression) {
+      throw new Error("Invalid or non-normalized Cron expression.");
+    }
+    if (config.intervalMs !== null && config.intervalMs < MIN_DYNAMIC_INTERVAL_MS) {
+      throw new Error("Cron intervals must be at least one minute.");
+    }
+  }
+  if (config.cadenceLabel !== undefined && config.cadenceLabel !== null && (
+    typeof config.cadenceLabel !== "string" || config.cadenceLabel.length > 200
+  )) {
+    throw new Error("Invalid cadence label.");
   }
   const minimumLifetime = config.intervalMs ?? MIN_DYNAMIC_INTERVAL_MS;
   if (

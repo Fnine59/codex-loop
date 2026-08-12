@@ -34,14 +34,14 @@ test("parses stop and completion markers", () => {
 });
 
 test("round-trips bounded dynamic next-delay markers", () => {
-  const marker = createNextMarker(config.id, "2h");
+  const marker = createNextMarker(config.id, "1h");
   assert.deepEqual(parseNextMarker(marker), {
     id: config.id,
-    duration: "2h",
-    delayMs: 7_200_000,
+    duration: "1h",
+    delayMs: 3_600_000,
   });
-  assert.throws(() => createNextMarker(config.id, "30s"), /between 1m and 6h/);
-  assert.throws(() => createNextMarker(config.id, "7h"), /between 1m and 6h/);
+  assert.throws(() => createNextMarker(config.id, "30s"), /between 1m and 1h/);
+  assert.throws(() => createNextMarker(config.id, "2h"), /between 1m and 1h/);
 });
 
 test("keeps invalid dynamic delays parseable for fallback", () => {

@@ -20,17 +20,24 @@ function hookInput(message, sessionId = "session-1", stopHookActive = false) {
 }
 
 function startConfig(overrides = {}) {
-  return {
+  const config = {
     v: 1,
     id: "a1b2c3d4e5f6",
     task: "run tests",
     until: "tests pass",
-    intervalMs: 1_000,
-    ttlMs: 10_000,
+    intervalMs: 60_000,
+    cronExpression: "* * * * *",
+    cadenceLabel: "every 1m",
+    ttlMs: 600_000,
     maxRuns: 5,
     immediate: false,
     ...overrides,
   };
+  if (overrides.intervalMs === null && overrides.cronExpression === undefined) {
+    config.cronExpression = null;
+    config.cadenceLabel = null;
+  }
+  return config;
 }
 
 async function fixture(context) {
@@ -48,6 +55,7 @@ async function fixture(context) {
     sleep: async (milliseconds) => {
       currentTime += milliseconds;
     },
+    detectRuntime: async () => ({ backend: "stop-hook" }),
   };
   return { dataDir, options, pendingDir };
 }
@@ -98,7 +106,7 @@ test("runs an adaptive loop immediately and uses the model-selected delay", asyn
 
   const first = await handleStop(hookInput(await startMarker(config, pendingDir)), options);
   assert.equal(first.decision, "block");
-  assert.match(first.reason, /choose the next delay from 1m to 6h/);
+  assert.match(first.reason, /choose the next delay from 1m to 1h/);
   assert.match(first.reason, new RegExp(`codex-loop:v1:next:${config.id}:<delay>`));
 
   const second = await handleStop(
@@ -142,7 +150,7 @@ test("keeps an until-stopped loop active without an expiry", async (context) => 
 
   assert.equal((await handleStop(hookInput(await startMarker(config, pendingDir)), options)).decision, "block");
   const output = await handleStop(
-    hookInput(`One pass finished. ${createNextMarker(config.id, "6h")}`, "session-1", true),
+    hookInput(`One pass finished. ${createNextMarker(config.id, "1h")}`, "session-1", true),
     options,
   );
   assert.equal(output.decision, "block");
@@ -152,7 +160,7 @@ test("keeps an until-stopped loop active without an expiry", async (context) => 
   assert.equal(state.status, "running");
   assert.equal(state.expiresAt, null);
   assert.equal(state.runs, 1);
-  assert.equal(state.lastDelayMs, 21_600_000);
+  assert.equal(state.lastDelayMs, 3_600_000);
   assert.equal(state.lastDelaySource, "model");
 });
 
@@ -162,7 +170,7 @@ test("caps the next adaptive wakeup at the finite lifetime", async (context) => 
   await handleStop(hookInput(await startMarker(config, pendingDir)), options);
 
   const output = await handleStop(
-    hookInput(`Still pending. ${createNextMarker(config.id, "6h")}`, "session-1", true),
+    hookInput(`Still pending. ${createNextMarker(config.id, "1h")}`, "session-1", true),
     options,
   );
   assert.match(output.systemMessage, /expired/);
@@ -211,4 +219,20 @@ test("terminates an active loop idempotently", async (context) => {
 test("does nothing in conversations without an active loop", async (context) => {
   const { options } = await fixture(context);
   assert.deepEqual(await handleStop(hookInput("A normal answer."), options), {});
+});
+
+test("requires App Server when a Cron wait exceeds the Stop-hook timeout", async (context) => {
+  const { dataDir, options, pendingDir } = await fixture(context);
+  const config = startConfig({
+    intervalMs: null,
+    cronExpression: "0 0 1 * *",
+    cadenceLabel: "cron 0 0 1 * *",
+    ttlMs: 400 * 86_400_000,
+    immediate: false,
+  });
+  const output = await handleStop(hookInput(await startMarker(config, pendingDir)), options);
+  assert.match(output.systemMessage, /requires loop-codex/);
+  const state = await readLoopState("session-1", dataDir);
+  assert.equal(state.status, "failed");
+  assert.equal(state.endReason, "stop-hook-wait-too-long");
 });

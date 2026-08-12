@@ -3,7 +3,7 @@
 import { fileURLToPath } from "node:url";
 import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 
-const ACTIVE_STATUSES = new Set(["waiting", "running"]);
+const ACTIVE_STATUSES = new Set(["waiting", "launching", "running"]);
 
 export async function handleSessionEnd(input, options = {}) {
   if (!input || input.hook_event_name !== "SessionEnd" || typeof input.session_id !== "string") return false;
@@ -19,6 +19,8 @@ export async function handleSessionEnd(input, options = {}) {
     endReason: "session-ended",
     endedAt: now,
     nextRunAt: null,
+    wakeToken: null,
+    activeTurnId: null,
   }, dataDir);
   return true;
 }

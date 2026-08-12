@@ -1,37 +1,42 @@
 ---
 name: loop
-description: Start, continue, complete, or stop repeated work inside the current Codex conversation. Use when the user asks Codex to loop, repeat a task at an interval, keep checking or testing until a condition is met, or stop an active Codex loop.
+description: Start, continue, complete, or stop repeated work inside the current Codex conversation. Use when the user asks Codex to loop, repeat a task at an interval or Cron schedule, keep checking or testing until a condition is met, or stop an active Codex loop.
 ---
 
 # Codex Loop
 
-Keep the loop in the current conversation. Do not start `codex exec`, a daemon, cron, an App Server, a second session, or a background worker.
+Keep every run in the current conversation. The hook automatically selects the App Server backend when the current thread is attached to it and otherwise uses the synchronous Stop-hook backend. Do not start `codex exec`, a second session, a system Cron job, or a custom daemon.
 
 ## Start
 
-1. Extract the optional interval, task, optional completion condition, and optional bounds from the request. Normalize natural-language durations to `s`, `m`, `h`, or `d`; for example, “持续 3 天” becomes `--for 3d`.
+1. Extract the schedule, task, optional completion condition, and optional bounds from the request.
 2. Resolve `../../scripts/loopctl.mjs` relative to this `SKILL.md` file.
-3. Run:
+3. Run one of these forms:
 
 ```bash
-node <resolved-loopctl-path> start [--every <duration>] [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
+node <resolved-loopctl-path> start [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] -- <task>
+node <resolved-loopctl-path> start --every <duration> [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
+node <resolved-loopctl-path> start --cron <five-field-expression> [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
 ```
 
-- Map an explicit lifetime such as “持续 2 小时” or “for 3 days” to `--for 2h` or `--for 3d`.
-- Map “直到我说停止”, “一直运行”, “不要自动结束”, “until I stop”, or equivalent explicit manual-stop wording to `--until-stopped`. Do not add `--for`, `--max-runs`, or `--until`; only an explicit stop, `Ctrl-C`, or ending the Codex process may end this mode.
-- If the user gives no interval, omit `--every`. The first pass runs immediately; after every pass Codex chooses the next delay from 1 minute to 6 hours using the exact next-delay marker supplied by the hook. A missing, malformed, out-of-range, or wrong-loop marker falls back to 30 minutes.
-- If the user supplies no lifetime, run-count, completion condition, or manual-stop wording, omit the bound and accept the helper's 24-hour default.
-- For a fixed interval, do not use `--now` unless the user asks for an immediate first run. Dynamic loops always run their first pass immediately.
+- Normalize natural-language durations to `s`, `m`, `h`, or `d`; for example, “持续 3 天” becomes `--for 3d`.
+- Map `every N seconds/minutes/hours/days` and equivalent wording to `--every`. The helper converts it to a clean wall-clock Cron cadence. Cron resolution is one minute, so sub-minute input is rounded and reported by the helper.
+- Map an explicit five-field Cron expression or an unambiguous wall-clock schedule such as “工作日 9 点” to `--cron`. Use numeric fields only and quote the complete expression as one argument. Never call the operating system's `crontab` command.
+- If the user gives no schedule, omit both `--every` and `--cron`. Adaptive mode starts immediately; after each pass Codex chooses a delay from 1 minute to 1 hour using the exact next-delay marker supplied by the hook. A missing, malformed, out-of-range, or wrong-loop marker falls back to 30 minutes.
+- Map “直到我说停止”, “一直运行”, “不要自动结束”, “until I stop”, or equivalent explicit manual-stop wording to `--until-stopped`. Do not add `--for`, `--max-runs`, or `--until` in that mode.
+- If the user supplies no lifetime, run count, completion condition, or manual-stop wording, accept the helper's 24-hour default.
+- For a fixed or Cron schedule, use `--now` only when the user asks for an immediate first run. Adaptive loops always run their first pass immediately.
 
-The command prints one HTML-comment marker. Reproduce that marker exactly once in the final assistant response. Keep the visible response concise. The Stop hook binds the marker to this exact Codex conversation and schedules the first run.
+The command prints one HTML-comment start marker. Reproduce that marker exactly once in the final assistant response. Keep visible text concise. The Stop hook binds the marker to this Codex conversation, detects its runtime once, and schedules the first run.
 
 ## Continue
 
-A continuation prompt beginning with `[Codex Loop` is an active loop run. Perform exactly one pass of its task in the current working directory.
+A prompt beginning with `[Codex Loop` is one active loop pass. Perform exactly one pass in the current working directory.
 
-- If the completion condition is definitely satisfied, include the exact completion marker supplied by the continuation prompt in the final response.
-- Otherwise, follow the continuation prompt's scheduling instruction. Fixed loops finish normally; dynamic loops choose the next delay and include exactly one next-delay marker.
+- If the supplied completion condition is definitely satisfied, include the exact completion marker from the prompt.
+- Otherwise follow the prompt's scheduling instruction. Adaptive loops include exactly one valid next-delay marker. Fixed and Cron loops finish normally without a scheduling marker.
 - Do not invoke `start` again during a continuation.
+- Do not backfill multiple missed Cron ticks. The runtime queues at most one catch-up pass.
 
 ## Stop
 
@@ -41,18 +46,18 @@ When the user asks to stop or cancel the current loop, resolve the helper as abo
 node <resolved-loopctl-path> stop
 ```
 
-Reproduce its marker exactly once in the final response. Stopping is idempotent. While the hook is waiting and the TUI has no input prompt, `Ctrl-C` immediately terminates the loop. If `Ctrl-C` interrupts an active model pass, the loop cannot resume on a later turn and is finalized when that turn or session closes.
+Reproduce its marker exactly once in the final response. Stopping is idempotent. In synchronous mode, `Ctrl-C` while the hook waits terminates the loop. In App Server mode, use the stop request for a reliable cancellation while the TUI remains interactive; interrupting an active loop turn also terminates it when App Server reports that turn as interrupted.
 
 ## Lifecycle
 
-The hook owns these transitions:
+The runtime owns these transitions:
 
 ```text
-created -> waiting -> running -> waiting
-                      |          |
-                      +-> completed
-                      +-> terminated
-                      +-> failed
+created -> waiting -> launching -> running -> waiting
+                                  |          |
+                                  +-> completed
+                                  +-> terminated
+                                  +-> failed
 ```
 
 Never claim a loop is active unless the start-marker command succeeded.

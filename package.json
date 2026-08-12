@@ -2,7 +2,7 @@
   "name": "codex-loop",
   "version": "0.2.0",
   "private": true,
-  "description": "A Codex plugin that repeats work inside the current TUI conversation.",
+  "description": "A Codex plugin for adaptive and Cron loops in the current conversation.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",

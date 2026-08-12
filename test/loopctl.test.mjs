@@ -19,9 +19,9 @@ test("loopctl creates a short marker backed by pending configuration", async (co
     LOOPCTL,
     "start",
     "--every",
-    "1s",
+    "1m",
     "--for",
-    "5s",
+    "5m",
     "--max-runs",
     "2",
     "--until",
@@ -36,6 +36,7 @@ test("loopctl creates a short marker backed by pending configuration", async (co
   assert.equal(config.task, "run tests");
   assert.equal(config.maxRuns, 2);
   assert.equal(config.immediate, true);
+  assert.equal(config.cronExpression, "* * * * *");
 });
 
 test("loopctl creates an idempotent stop marker", async () => {
@@ -58,7 +59,7 @@ test("loopctl uses adaptive scheduling when no interval is supplied", async (con
   assert.equal(config.intervalMs, null);
   assert.equal(config.immediate, true);
   assert.equal(config.ttlMs, 86_400_000);
-  assert.match(stdout, /adaptive 1m-6h \(30m fallback\)/);
+  assert.match(stdout, /adaptive 1m-1h \(30m fallback\)/);
 });
 
 test("loopctl creates an until-stopped loop without an expiry", async (context) => {
@@ -110,6 +111,44 @@ test("loopctl accepts a finite lifetime longer than seven days", async (context)
     "check status",
   ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
   const config = await takePendingConfig(parseStartMarker(stdout), pendingDir);
-  assert.equal(config.intervalMs, 30_000);
+  assert.equal(config.intervalMs, 60_000);
+  assert.equal(config.cronExpression, "* * * * *");
   assert.equal(config.ttlMs, 30 * 86_400_000);
+  assert.match(stdout, /normalized 30s to 1m/);
+});
+
+test("loopctl accepts a five-field Cron expression", async (context) => {
+  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-ctl-cron-"));
+  context.after(() => fs.rm(pendingDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [
+    LOOPCTL,
+    "start",
+    "--cron",
+    "0 9 * * 1-5",
+    "--for",
+    "7d",
+    "--",
+    "check the weekday report",
+  ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
+  const config = await takePendingConfig(parseStartMarker(stdout), pendingDir);
+  assert.equal(config.intervalMs, null);
+  assert.equal(config.cronExpression, "0 9 * * 1-5");
+  assert.equal(config.cadenceLabel, "cron 0 9 * * 1-5");
+  assert.equal(config.immediate, false);
+});
+
+test("loopctl rejects competing fixed schedules", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      LOOPCTL,
+      "start",
+      "--every",
+      "5m",
+      "--cron",
+      "*/5 * * * *",
+      "--",
+      "check status",
+    ]),
+    /cannot be combined/,
+  );
 });

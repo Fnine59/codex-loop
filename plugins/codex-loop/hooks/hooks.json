@@ -1,5 +1,5 @@
 {
-  "description": "Continue active Codex loops in the current conversation.",
+  "description": "Schedule and continue adaptive or Cron loops in the current conversation.",
   "hooks": {
     "SessionEnd": [
       {
@@ -19,7 +19,7 @@
             "type": "command",
             "command": "if [ -f \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"; else printf '{}\\n'; fi",
             "timeout": 604800,
-            "statusMessage": "Codex Loop waiting"
+            "statusMessage": "Codex Loop scheduling"
           }
         ]
       }
