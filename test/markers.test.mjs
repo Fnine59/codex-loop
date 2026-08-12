@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createControlMarker,
+  createNextMarker,
   createStartMarker,
   parseControlMarker,
+  parseNextMarker,
   parseStartMarker,
 } from "../plugins/codex-loop/scripts/lib/markers.mjs";
 
@@ -29,6 +31,26 @@ test("parses stop and completion markers", () => {
     action: "complete",
     id: config.id,
   });
+});
+
+test("round-trips bounded dynamic next-delay markers", () => {
+  const marker = createNextMarker(config.id, "2h");
+  assert.deepEqual(parseNextMarker(marker), {
+    id: config.id,
+    duration: "2h",
+    delayMs: 7_200_000,
+  });
+  assert.throws(() => createNextMarker(config.id, "30s"), /between 1m and 6h/);
+  assert.throws(() => createNextMarker(config.id, "7h"), /between 1m and 6h/);
+});
+
+test("keeps invalid dynamic delays parseable for fallback", () => {
+  assert.deepEqual(parseNextMarker(`<!-- codex-loop:v1:next:${config.id}:30s -->`), {
+    id: config.id,
+    duration: "30s",
+    delayMs: null,
+  });
+  assert.equal(parseNextMarker("No scheduling marker."), null);
 });
 
 test("rejects invalid marker payloads", () => {

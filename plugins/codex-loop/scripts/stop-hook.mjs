@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "node:url";
-import { formatDuration } from "./lib/duration.mjs";
-import { createControlMarker, parseControlMarker, parseStartMarker } from "./lib/markers.mjs";
+import {
+  DEFAULT_DYNAMIC_INTERVAL_MS,
+  formatDuration,
+  MAX_DYNAMIC_INTERVAL_MS,
+  MIN_DYNAMIC_INTERVAL_MS,
+} from "./lib/duration.mjs";
+import { createControlMarker, parseControlMarker, parseNextMarker, parseStartMarker } from "./lib/markers.mjs";
 import { defaultPendingDir, takePendingConfig } from "./lib/pending.mjs";
 import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 
@@ -34,12 +39,15 @@ function activate(config, input, now) {
     task: config.task,
     until: config.until,
     intervalMs: config.intervalMs,
+    scheduleMode: config.intervalMs === null ? "dynamic" : "fixed",
     maxRuns: config.maxRuns,
     status: "waiting",
     runs: 0,
     createdAt: now,
     expiresAt: config.ttlMs === null ? null : now + config.ttlMs,
-    nextRunAt: config.immediate ? now : now + config.intervalMs,
+    nextRunAt: config.intervalMs === null || config.immediate ? now : now + config.intervalMs,
+    lastDelayMs: null,
+    lastDelaySource: null,
     lastStartedAt: null,
     lastCompletedAt: null,
     endedAt: null,
@@ -65,12 +73,25 @@ function completionReason(state, now) {
 }
 
 function continuationPrompt(state) {
-  if (state.expiresAt === null) {
-    return `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}\n\nPerform exactly one pass in the current working directory, then finish normally. This loop ends only when the user asks to stop it or interrupts the TUI. Do not mark it complete and do not start another loop.`;
-  }
+  const dynamic = state.intervalMs === null;
+  const stopOnly = state.expiresAt === null;
+  const task = `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}`;
   const condition = state.until ? `\nCompletion condition: ${state.until}` : "";
+  if (!dynamic && stopOnly) {
+    return `${task}\n\nPerform exactly one pass in the current working directory, then finish normally. This loop ends only when the user asks to stop it or interrupts the TUI. The hook will wait ${formatDuration(state.intervalMs)} before the next run. Do not mark it complete and do not start another loop.`;
+  }
+  if (!dynamic) {
+    const completionMarker = createControlMarker("complete", state.id);
+    return `${task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker in the final response: ${completionMarker}\nOtherwise finish normally; the hook will wait ${formatDuration(state.intervalMs)} before the next run. Do not start another loop.`;
+  }
+
+  const nextMarker = `<!-- codex-loop:v1:next:${state.id}:<delay> -->`;
+  const schedule = `After the pass, choose the next delay from ${formatDuration(MIN_DYNAMIC_INTERVAL_MS)} to ${formatDuration(MAX_DYNAMIC_INTERVAL_MS)} based on what you observed. To continue, include exactly one marker in the final response by replacing <delay> with a whole duration such as 1m, 30m, or 2h: ${nextMarker} If the marker is missing or invalid, the hook uses ${formatDuration(DEFAULT_DYNAMIC_INTERVAL_MS)}.`;
+  if (stopOnly) {
+    return `${task}\n\nPerform exactly one pass in the current working directory. This loop ends only when the user asks to stop it or interrupts the TUI. Do not mark it complete. ${schedule} Do not start another loop.`;
+  }
   const completionMarker = createControlMarker("complete", state.id);
-  return `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker in the final response: ${completionMarker}\nOtherwise finish normally; the hook will wait ${formatDuration(state.intervalMs)} before the next run. Do not start another loop.`;
+  return `${task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker and do not include a next-delay marker: ${completionMarker} Otherwise, ${schedule} Do not start another loop.`;
 }
 
 async function waitAndContinue(state, context) {
@@ -169,7 +190,17 @@ export async function handleStop(input, options = {}) {
       await writeLoopState(state, context.dataDir);
       return { systemMessage: `Codex Loop ${state.id} completed (${reason}).` };
     }
-    state = { ...state, status: "waiting", nextRunAt: now + state.intervalMs };
+    const requestedDelay = state.intervalMs === null ? parseNextMarker(message) : null;
+    const useRequestedDelay = requestedDelay?.id === state.id && requestedDelay.delayMs !== null;
+    const delayMs = state.intervalMs ?? (useRequestedDelay ? requestedDelay.delayMs : DEFAULT_DYNAMIC_INTERVAL_MS);
+    const scheduledAt = now + delayMs;
+    state = {
+      ...state,
+      status: "waiting",
+      nextRunAt: state.expiresAt === null ? scheduledAt : Math.min(scheduledAt, state.expiresAt),
+      lastDelayMs: delayMs,
+      lastDelaySource: state.intervalMs === null ? (useRequestedDelay ? "model" : "fallback") : "fixed",
+    };
   }
 
   return waitAndContinue(state, context);

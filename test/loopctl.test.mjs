@@ -43,6 +43,24 @@ test("loopctl creates an idempotent stop marker", async () => {
   assert.deepEqual(parseControlMarker(stdout), { action: "stop", id: null });
 });
 
+test("loopctl uses adaptive scheduling when no interval is supplied", async (context) => {
+  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-ctl-adaptive-"));
+  context.after(() => fs.rm(pendingDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [
+    LOOPCTL,
+    "start",
+    "--max-runs",
+    "2",
+    "--",
+    "check CI",
+  ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
+  const config = await takePendingConfig(parseStartMarker(stdout), pendingDir);
+  assert.equal(config.intervalMs, null);
+  assert.equal(config.immediate, true);
+  assert.equal(config.ttlMs, 86_400_000);
+  assert.match(stdout, /adaptive 1m-6h \(30m fallback\)/);
+});
+
 test("loopctl creates an until-stopped loop without an expiry", async (context) => {
   const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-ctl-forever-"));
   context.after(() => fs.rm(pendingDir, { recursive: true, force: true }));

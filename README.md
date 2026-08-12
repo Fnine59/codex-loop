@@ -36,12 +36,14 @@ codex plugin add codex-loop@personal
 
 每 30 秒输出一次状态，持续 3 天。
 
+检查 CI 状态并处理问题，根据每轮结果自行决定多久后再检查。
+
 每分钟检查一次服务，直到我说停止，不要自动结束。
 
 停止当前 Loop。
 ```
 
-默认第一轮在一个间隔后执行；明确要求“立即执行”时，第一轮会立刻开始。自然语言中的秒、分钟、小时和天会分别映射为执行间隔和持续期限。用户没有提供任何结束边界时，Skill 默认限制为 24 小时；明确说“直到我说停止”时则不设置到期时间，也不会因为任务单轮完成而自动结束。
+指定间隔时，默认第一轮在一个间隔后执行；明确要求“立即执行”时立刻开始。未指定间隔时进入动态模式：第一轮立即执行，之后 Codex 每轮根据结果在 1 分钟到 6 小时内选择下一次等待时间；缺少有效选择时使用 30 分钟。用户没有提供任何结束边界时，Skill 默认限制为 24 小时；明确说“直到我说停止”时则不设置到期时间，也不会因为任务单轮完成而自动结束。
 
 ## 生命周期
 
@@ -102,12 +104,14 @@ Run once now, then check CI every 10 minutes, at most 12 times.
 
 Print a status update every 30 seconds for 3 days.
 
+Check CI and address problems, choosing when to check again after each pass.
+
 Check the service every minute until I say stop; do not expire automatically.
 
 Stop the current loop.
 ```
 
-The first run normally starts after one interval. Ask for an immediate run to start it now. Natural-language seconds, minutes, hours, and days are mapped to the interval and lifetime. With no ending bound, the Skill defaults to 24 hours; an explicit “until I say stop” request has no expiry and does not auto-complete after one successful pass.
+With a fixed interval, the first run normally starts after one interval; ask for an immediate run to start it now. With no interval, adaptive mode runs the first pass immediately, then Codex chooses each next delay from 1 minute to 6 hours; a missing or invalid choice falls back to 30 minutes. With no ending bound, the Skill defaults to 24 hours; an explicit “until I say stop” request has no expiry and does not auto-complete after one successful pass.
 
 ## Lifecycle
 

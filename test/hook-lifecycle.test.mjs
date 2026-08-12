@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createControlMarker, createStartMarker } from "../plugins/codex-loop/scripts/lib/markers.mjs";
+import { createControlMarker, createNextMarker, createStartMarker } from "../plugins/codex-loop/scripts/lib/markers.mjs";
 import { writePendingConfig } from "../plugins/codex-loop/scripts/lib/pending.mjs";
 import { readLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
 import { handleStop } from "../plugins/codex-loop/scripts/stop-hook.mjs";
@@ -92,12 +92,59 @@ test("ends naturally at max-runs", async (context) => {
   assert.equal((await readLoopState("session-1", dataDir)).status, "completed");
 });
 
+test("runs an adaptive loop immediately and uses the model-selected delay", async (context) => {
+  const { dataDir, options, pendingDir } = await fixture(context);
+  const config = startConfig({ intervalMs: null, ttlMs: 86_400_000, immediate: false });
+
+  const first = await handleStop(hookInput(await startMarker(config, pendingDir)), options);
+  assert.equal(first.decision, "block");
+  assert.match(first.reason, /choose the next delay from 1m to 6h/);
+  assert.match(first.reason, new RegExp(`codex-loop:v1:next:${config.id}:<delay>`));
+
+  const second = await handleStop(
+    hookInput(`Still pending. ${createNextMarker(config.id, "2m")}`, "session-1", true),
+    options,
+  );
+  assert.equal(second.decision, "block");
+  assert.match(second.reason, /Run 2/);
+  const state = await readLoopState("session-1", dataDir);
+  assert.equal(state.scheduleMode, "dynamic");
+  assert.equal(state.runs, 1);
+  assert.equal(state.lastDelayMs, 120_000);
+  assert.equal(state.lastDelaySource, "model");
+});
+
+test("falls back to 30 minutes when an adaptive delay is missing or invalid", async (context) => {
+  const { dataDir, options, pendingDir } = await fixture(context);
+  const config = startConfig({ intervalMs: null, ttlMs: 86_400_000, immediate: false });
+  await handleStop(hookInput(await startMarker(config, pendingDir)), options);
+
+  const output = await handleStop(
+    hookInput(`Still pending. <!-- codex-loop:v1:next:${config.id}:30s -->`, "session-1", true),
+    options,
+  );
+  assert.equal(output.decision, "block");
+  const state = await readLoopState("session-1", dataDir);
+  assert.equal(state.lastDelayMs, 1_800_000);
+  assert.equal(state.lastDelaySource, "fallback");
+
+  const next = await handleStop(hookInput("Still pending without a marker.", "session-1", true), options);
+  assert.equal(next.decision, "block");
+  const nextState = await readLoopState("session-1", dataDir);
+  assert.equal(nextState.runs, 2);
+  assert.equal(nextState.lastDelayMs, 1_800_000);
+  assert.equal(nextState.lastDelaySource, "fallback");
+});
+
 test("keeps an until-stopped loop active without an expiry", async (context) => {
   const { dataDir, options, pendingDir } = await fixture(context);
-  const config = startConfig({ ttlMs: null, maxRuns: null, until: null, immediate: true });
+  const config = startConfig({ intervalMs: null, ttlMs: null, maxRuns: null, until: null, immediate: false });
 
   assert.equal((await handleStop(hookInput(await startMarker(config, pendingDir)), options)).decision, "block");
-  const output = await handleStop(hookInput("One pass finished.", "session-1", true), options);
+  const output = await handleStop(
+    hookInput(`One pass finished. ${createNextMarker(config.id, "6h")}`, "session-1", true),
+    options,
+  );
   assert.equal(output.decision, "block");
   assert.match(output.reason, /ends only when the user asks to stop/);
   assert.doesNotMatch(output.reason, /codex-loop:v1:complete/);
@@ -105,6 +152,24 @@ test("keeps an until-stopped loop active without an expiry", async (context) => 
   assert.equal(state.status, "running");
   assert.equal(state.expiresAt, null);
   assert.equal(state.runs, 1);
+  assert.equal(state.lastDelayMs, 21_600_000);
+  assert.equal(state.lastDelaySource, "model");
+});
+
+test("caps the next adaptive wakeup at the finite lifetime", async (context) => {
+  const { dataDir, options, pendingDir } = await fixture(context);
+  const config = startConfig({ intervalMs: null, ttlMs: 120_000, immediate: false });
+  await handleStop(hookInput(await startMarker(config, pendingDir)), options);
+
+  const output = await handleStop(
+    hookInput(`Still pending. ${createNextMarker(config.id, "6h")}`, "session-1", true),
+    options,
+  );
+  assert.match(output.systemMessage, /expired/);
+  const state = await readLoopState("session-1", dataDir);
+  assert.equal(state.status, "completed");
+  assert.equal(state.runs, 1);
+  assert.equal(state.endReason, "expired");
 });
 
 test("ignores an automatic completion marker for an until-stopped loop", async (context) => {

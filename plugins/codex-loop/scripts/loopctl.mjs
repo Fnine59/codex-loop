@@ -1,14 +1,21 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
-import { formatDuration, MAX_LIFETIME_MS, parseDuration } from "./lib/duration.mjs";
+import {
+  DEFAULT_DYNAMIC_INTERVAL_MS,
+  formatDuration,
+  MAX_DYNAMIC_INTERVAL_MS,
+  MAX_LIFETIME_MS,
+  MIN_DYNAMIC_INTERVAL_MS,
+  parseDuration,
+} from "./lib/duration.mjs";
 import { createControlMarker, createStartMarker, newLoopId } from "./lib/markers.mjs";
 import { writePendingConfig } from "./lib/pending.mjs";
 
 const HELP = `loopctl
 
 Usage:
-  loopctl start --every <duration> [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
+  loopctl start [--every <duration>] [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
   loopctl stop
   loopctl complete [--id <loop-id>]
 
@@ -37,17 +44,17 @@ async function start(args) {
       now: { type: "boolean", default: false },
     },
   });
-  if (!values.every) throw new Error("--every is required.");
   if (values["until-stopped"] && (values.for || values["max-runs"] || values.until)) {
     throw new Error("--until-stopped cannot be combined with --for, --max-runs, or --until.");
   }
   const task = positionals.join(" ").trim();
   if (!task) throw new Error("A task is required after --.");
 
-  const intervalMs = parseDuration(values.every);
+  const intervalMs = values.every ? parseDuration(values.every) : null;
+  const minimumLifetime = intervalMs ?? MIN_DYNAMIC_INTERVAL_MS;
   const ttlMs = values["until-stopped"]
     ? null
-    : parseDuration(values.for ?? "24h", { min: intervalMs, max: MAX_LIFETIME_MS });
+    : parseDuration(values.for ?? "24h", { min: minimumLifetime, max: MAX_LIFETIME_MS });
   const config = {
     v: 1,
     id: newLoopId(),
@@ -56,11 +63,14 @@ async function start(args) {
     intervalMs,
     ttlMs,
     maxRuns: positiveInteger(values["max-runs"], "--max-runs"),
-    immediate: values.now,
+    immediate: intervalMs === null || values.now,
   };
   await writePendingConfig(config);
   const lifetime = ttlMs === null ? "until stopped" : formatDuration(ttlMs);
-  console.log(`Codex Loop prepared: every ${formatDuration(intervalMs)}, lifetime ${lifetime}.`);
+  const cadence = intervalMs === null
+    ? `adaptive ${formatDuration(MIN_DYNAMIC_INTERVAL_MS)}-${formatDuration(MAX_DYNAMIC_INTERVAL_MS)} (${formatDuration(DEFAULT_DYNAMIC_INTERVAL_MS)} fallback)`
+    : `every ${formatDuration(intervalMs)}`;
+  console.log(`Codex Loop prepared: ${cadence}, lifetime ${lifetime}.`);
   console.log("Include this exact marker once in the final assistant response:");
   console.log(createStartMarker(config.id));
 }
