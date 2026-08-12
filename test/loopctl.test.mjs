@@ -42,3 +42,56 @@ test("loopctl creates an idempotent stop marker", async () => {
   const { stdout } = await execFileAsync(process.execPath, [LOOPCTL, "stop"]);
   assert.deepEqual(parseControlMarker(stdout), { action: "stop", id: null });
 });
+
+test("loopctl creates an until-stopped loop without an expiry", async (context) => {
+  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-ctl-forever-"));
+  context.after(() => fs.rm(pendingDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [
+    LOOPCTL,
+    "start",
+    "--every",
+    "1s",
+    "--until-stopped",
+    "--",
+    "check status",
+  ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
+  const id = parseStartMarker(stdout);
+  const config = await takePendingConfig(id, pendingDir);
+  assert.equal(config.ttlMs, null);
+  assert.match(stdout, /lifetime until stopped/);
+});
+
+test("loopctl rejects conflicting lifetime bounds", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      LOOPCTL,
+      "start",
+      "--every",
+      "1s",
+      "--for",
+      "1d",
+      "--until-stopped",
+      "--",
+      "check status",
+    ]),
+    /cannot be combined/,
+  );
+});
+
+test("loopctl accepts a finite lifetime longer than seven days", async (context) => {
+  const pendingDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-ctl-long-"));
+  context.after(() => fs.rm(pendingDir, { recursive: true, force: true }));
+  const { stdout } = await execFileAsync(process.execPath, [
+    LOOPCTL,
+    "start",
+    "--every",
+    "30s",
+    "--for",
+    "30d",
+    "--",
+    "check status",
+  ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
+  const config = await takePendingConfig(parseStartMarker(stdout), pendingDir);
+  assert.equal(config.intervalMs, 30_000);
+  assert.equal(config.ttlMs, 30 * 86_400_000);
+});

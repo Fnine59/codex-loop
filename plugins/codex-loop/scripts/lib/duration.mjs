@@ -7,6 +7,7 @@ const UNITS = {
 
 export const MIN_INTERVAL_MS = 1_000;
 export const MAX_INTERVAL_MS = 7 * UNITS.d;
+export const MAX_LIFETIME_MS = 3_650 * UNITS.d;
 
 export function parseDuration(value, { min = MIN_INTERVAL_MS, max = MAX_INTERVAL_MS } = {}) {
   const match = /^(\d+)(s|m|h|d)$/.exec(value ?? "");

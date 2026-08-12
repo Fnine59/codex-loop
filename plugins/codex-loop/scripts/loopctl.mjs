@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
-import { formatDuration, parseDuration } from "./lib/duration.mjs";
+import { formatDuration, MAX_LIFETIME_MS, parseDuration } from "./lib/duration.mjs";
 import { createControlMarker, createStartMarker, newLoopId } from "./lib/markers.mjs";
 import { writePendingConfig } from "./lib/pending.mjs";
 
 const HELP = `loopctl
 
 Usage:
-  loopctl start --every <duration> [--max-runs <count>] [--for <duration>] [--until <condition>] [--now] -- <task>
+  loopctl start --every <duration> [--max-runs <count>] [--for <duration> | --until-stopped] [--until <condition>] [--now] -- <task>
   loopctl stop
   loopctl complete [--id <loop-id>]
 
@@ -31,17 +31,23 @@ async function start(args) {
     options: {
       every: { type: "string" },
       "max-runs": { type: "string" },
-      for: { type: "string", default: "24h" },
+      for: { type: "string" },
+      "until-stopped": { type: "boolean", default: false },
       until: { type: "string" },
       now: { type: "boolean", default: false },
     },
   });
   if (!values.every) throw new Error("--every is required.");
+  if (values["until-stopped"] && (values.for || values["max-runs"] || values.until)) {
+    throw new Error("--until-stopped cannot be combined with --for, --max-runs, or --until.");
+  }
   const task = positionals.join(" ").trim();
   if (!task) throw new Error("A task is required after --.");
 
   const intervalMs = parseDuration(values.every);
-  const ttlMs = parseDuration(values.for, { min: intervalMs });
+  const ttlMs = values["until-stopped"]
+    ? null
+    : parseDuration(values.for ?? "24h", { min: intervalMs, max: MAX_LIFETIME_MS });
   const config = {
     v: 1,
     id: newLoopId(),
@@ -53,7 +59,8 @@ async function start(args) {
     immediate: values.now,
   };
   await writePendingConfig(config);
-  console.log(`Codex Loop prepared: every ${formatDuration(intervalMs)}, lifetime ${formatDuration(ttlMs)}.`);
+  const lifetime = ttlMs === null ? "until stopped" : formatDuration(ttlMs);
+  console.log(`Codex Loop prepared: every ${formatDuration(intervalMs)}, lifetime ${lifetime}.`);
   console.log("Include this exact marker once in the final assistant response:");
   console.log(createStartMarker(config.id));
 }

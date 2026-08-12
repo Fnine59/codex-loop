@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { MAX_INTERVAL_MS, MIN_INTERVAL_MS } from "./duration.mjs";
+import { MAX_INTERVAL_MS, MAX_LIFETIME_MS, MIN_INTERVAL_MS } from "./duration.mjs";
 
 const START_PATTERN = /<!--\s*codex-loop:v1:start:([a-f0-9]{12})\s*-->/g;
 const CONTROL_PATTERN = /<!--\s*codex-loop:v1:(stop|complete)(?::([a-f0-9]{12}))?\s*-->/g;
@@ -30,13 +30,19 @@ export function validateStartConfig(config) {
   ) {
     throw new Error("Invalid loop interval.");
   }
-  if (!Number.isSafeInteger(config.ttlMs) || config.ttlMs < config.intervalMs || config.ttlMs > MAX_INTERVAL_MS) {
-    throw new Error("The loop lifetime must be at least one interval and no more than 7d.");
+  if (
+    config.ttlMs !== null &&
+    (!Number.isSafeInteger(config.ttlMs) || config.ttlMs < config.intervalMs || config.ttlMs > MAX_LIFETIME_MS)
+  ) {
+    throw new Error("The loop lifetime must be null or between one interval and 3650d.");
   }
   if (config.maxRuns !== null && (!Number.isSafeInteger(config.maxRuns) || config.maxRuns < 1 || config.maxRuns > MAX_RUNS)) {
     throw new Error(`maxRuns must be between 1 and ${MAX_RUNS}.`);
   }
   if (config.until !== null) assertText(config.until, "Completion condition", MAX_UNTIL_LENGTH);
+  if (config.ttlMs === null && (config.maxRuns !== null || config.until !== null)) {
+    throw new Error("An until-stopped loop cannot have another automatic completion bound.");
+  }
   if (typeof config.immediate !== "boolean") throw new Error("Invalid immediate flag.");
   return config;
 }

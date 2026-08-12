@@ -38,7 +38,7 @@ function activate(config, input, now) {
     status: "waiting",
     runs: 0,
     createdAt: now,
-    expiresAt: now + config.ttlMs,
+    expiresAt: config.ttlMs === null ? null : now + config.ttlMs,
     nextRunAt: config.immediate ? now : now + config.intervalMs,
     lastStartedAt: null,
     lastCompletedAt: null,
@@ -60,11 +60,14 @@ function endLoop(state, status, reason, now) {
 
 function completionReason(state, now) {
   if (state.maxRuns !== null && state.runs >= state.maxRuns) return "max-runs";
-  if (now >= state.expiresAt) return "expired";
+  if (state.expiresAt !== null && now >= state.expiresAt) return "expired";
   return null;
 }
 
 function continuationPrompt(state) {
+  if (state.expiresAt === null) {
+    return `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}\n\nPerform exactly one pass in the current working directory, then finish normally. This loop ends only when the user asks to stop it or interrupts the TUI. Do not mark it complete and do not start another loop.`;
+  }
   const condition = state.until ? `\nCompletion condition: ${state.until}` : "";
   const completionMarker = createControlMarker("complete", state.id);
   return `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker in the final response: ${completionMarker}\nOtherwise finish normally; the hook will wait ${formatDuration(state.intervalMs)} before the next run. Do not start another loop.`;
@@ -140,6 +143,12 @@ export async function handleStop(input, options = {}) {
 
   if (!state || !ACTIVE_STATUSES.has(state.status)) return {};
 
+  if (input.stop_hook_active !== true) {
+    state = endLoop(state, "terminated", "interrupted-turn", now);
+    await writeLoopState(state, context.dataDir);
+    return { systemMessage: `Codex Loop ${state.id} terminated (turn interrupted).` };
+  }
+
   if (state.status === "running") {
     state = {
       ...state,
@@ -148,7 +157,7 @@ export async function handleStop(input, options = {}) {
       lastAssistantMessage: message.slice(-MAX_SAVED_MESSAGE),
     };
 
-    if (control?.action === "complete" && (!control.id || control.id === state.id)) {
+    if (state.expiresAt !== null && control?.action === "complete" && (!control.id || control.id === state.id)) {
       state = endLoop(state, "completed", "condition-met", now);
       await writeLoopState(state, context.dataDir);
       return { systemMessage: `Codex Loop ${state.id} completed (condition met).` };

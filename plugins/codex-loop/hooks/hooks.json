@@ -1,12 +1,23 @@
 {
   "description": "Continue active Codex loops in the current conversation.",
   "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/session-end.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/session-end.mjs\"; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"",
+            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"; else printf '{}\\n'; fi",
             "timeout": 604800,
             "statusMessage": "Codex Loop waiting"
           }

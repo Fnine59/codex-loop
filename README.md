@@ -34,10 +34,14 @@ codex plugin add codex-loop@personal
 
 立即执行第一轮，然后每 10 分钟检查 CI，最多执行 12 次。
 
+每 30 秒输出一次状态，持续 3 天。
+
+每分钟检查一次服务，直到我说停止，不要自动结束。
+
 停止当前 Loop。
 ```
 
-默认第一轮在一个间隔后执行；明确要求“立即执行”时，第一轮会立刻开始。用户没有提供次数或时长边界时，Skill 默认限制为 24 小时。
+默认第一轮在一个间隔后执行；明确要求“立即执行”时，第一轮会立刻开始。自然语言中的秒、分钟、小时和天会分别映射为执行间隔和持续期限。用户没有提供任何结束边界时，Skill 默认限制为 24 小时；明确说“直到我说停止”时则不设置到期时间，也不会因为任务单轮完成而自动结束。
 
 ## 生命周期
 
@@ -50,7 +54,7 @@ created -> waiting -> running -> waiting
 ```
 
 - 条件满足、达到最大次数或到期：`completed`
-- 用户要求停止或等待时按 `Ctrl-C`：`terminated`
+- 用户要求停止、按 `Ctrl-C` 或结束当前会话：`terminated`
 - Hook 异常：停止续轮并在当前界面报告错误
 
 等待期间当前 TUI 不接受新输入；Codex 进程和电脑需要保持运行。Loop 状态按 Codex session 隔离并保存在 Plugin 的可写数据目录。
@@ -96,10 +100,14 @@ Run the tests every 5 minutes until they pass.
 
 Run once now, then check CI every 10 minutes, at most 12 times.
 
+Print a status update every 30 seconds for 3 days.
+
+Check the service every minute until I say stop; do not expire automatically.
+
 Stop the current loop.
 ```
 
-The first run normally starts after one interval. Ask for an immediate run to start it now. If the user supplies neither a run-count nor lifetime bound, the Skill defaults to 24 hours.
+The first run normally starts after one interval. Ask for an immediate run to start it now. Natural-language seconds, minutes, hours, and days are mapped to the interval and lifetime. With no ending bound, the Skill defaults to 24 hours; an explicit “until I say stop” request has no expiry and does not auto-complete after one successful pass.
 
 ## Lifecycle
 
@@ -112,7 +120,7 @@ created -> waiting -> running -> waiting
 ```
 
 - Condition met, maximum runs reached, or expiry: `completed`
-- Explicit stop or `Ctrl-C` while waiting: `terminated`
+- Explicit stop, `Ctrl-C`, or ending the current session: `terminated`
 - Hook error: continuation stops and the current UI reports the error
 
 The current TUI does not accept input while waiting; the Codex process and computer must remain running. Loop state is isolated by Codex session and stored in the plugin's writable data directory.
