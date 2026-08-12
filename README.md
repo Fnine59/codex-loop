@@ -2,82 +2,124 @@
 
 # 中文
 
-`codex-loop` 按固定间隔重复执行 Prompt，并在后续运行中恢复同一个 Codex session。
+`codex-loop` 是一个 Codex Plugin，让 Codex 在当前 TUI 对话中按间隔重复工作，直到条件满足、达到边界或被人工终止。
+
+它不启动 cron、daemon、App Server、`codex exec` 或第二个会话。同步 `Stop Hook` 在等待结束后，把下一轮提示精准送回启动 Loop 的同一个对话。
 
 ## 要求
 
 - Node.js 20+
-- 已安装并登录 Codex CLI
-- 目标目录是 Git 仓库
+- 支持 Plugins 与 Hooks 的 Codex CLI
 
-## 安装
+## 本地安装
+
+在仓库根目录执行：
 
 ```bash
-npm link
+codex plugin marketplace add "$PWD"
+codex plugin add codex-loop@personal
 ```
+
+然后启动 Codex TUI：
+
+1. 输入 `/hooks`，检查并信任 `codex-loop` 的 Stop Hook。
+2. 新建一个 Codex 会话，让 Skill 和 Hook 生效。
 
 ## 使用
 
-```bash
-# 只读检查；第一轮立即执行
-codex-loop start --every 5m -- "检查当前 PR 的 CI 状态"
+直接在正常对话里说：
 
-# 允许修改工作区
-codex-loop start --every 10m --sandbox workspace-write --max-runs 12 -- \
-  "检查 CI；如果失败，定位原因并做最小修复"
+```text
+每 5 分钟运行一次测试，直到测试通过。
 
-codex-loop list
-codex-loop stop <job-id>
-codex-loop open <job-id>
+立即执行第一轮，然后每 10 分钟检查 CI，最多执行 12 次。
+
+停止当前 Loop。
 ```
 
-任务默认 7 天后过期。状态保存在 `~/.codex-loop/jobs.json`，日志位于 `~/.codex-loop/logs/`。
+默认第一轮在一个间隔后执行；明确要求“立即执行”时，第一轮会立刻开始。用户没有提供次数或时长边界时，Skill 默认限制为 24 小时。
 
-## 生命周期与 TUI
+## 生命周期
 
-`created → running ↔ waiting → completed`；主动终止走 `stopping → terminated`；异常进入 `failed`。
+```text
+created -> waiting -> running -> waiting
+                      |          |
+                      +-> completed
+                      +-> terminated
+                      +-> failed
+```
 
-后台 worker 持有生命周期，因此它不是一个持续运行的 Skill。`stop` 会中断当前 Codex 子进程并等待 `terminated` 确认。Loop 活跃时不允许 TUI 同时占用该 session；终止或自然结束后，使用 `codex-loop open <job-id>` 进入对应 Codex TUI。
+- 条件满足、达到最大次数或到期：`completed`
+- 用户要求停止或等待时按 `Ctrl-C`：`terminated`
+- Hook 异常：停止续轮并在当前界面报告错误
 
-实现基于官方支持的 `codex exec --json` 和 `codex exec resume <SESSION_ID>`。
+等待期间当前 TUI 不接受新输入；Codex 进程和电脑需要保持运行。Loop 状态按 Codex session 隔离并保存在 Plugin 的可写数据目录。
+
+## 开发检查
+
+```bash
+npm run check
+uv run --with pyyaml python ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/codex-loop
+```
 
 # English
 
-`codex-loop` runs a prompt at a fixed interval and resumes the same Codex session on later runs.
+`codex-loop` is a Codex plugin that repeats work at an interval inside the current TUI conversation until a condition is met, a bound is reached, or the user interrupts it.
+
+It starts no cron job, daemon, App Server, `codex exec` process, or secondary session. A synchronous `Stop` hook waits and then sends the next prompt back to the exact conversation that started the loop.
 
 ## Requirements
 
 - Node.js 20+
-- Codex CLI installed and authenticated
-- A Git repository as the working directory
+- A Codex CLI release with Plugins and Hooks support
 
-## Install
+## Local installation
+
+Run from the repository root:
 
 ```bash
-npm link
+codex plugin marketplace add "$PWD"
+codex plugin add codex-loop@personal
 ```
+
+Then start the Codex TUI:
+
+1. Enter `/hooks`, review the `codex-loop` Stop hook, and trust it.
+2. Start a new Codex session so the Skill and Hook are loaded.
 
 ## Usage
 
-```bash
-# Read-only checks; the first run starts immediately
-codex-loop start --every 5m -- "Check the current PR CI status"
+Use natural language in a normal conversation:
 
-# Allow workspace changes
-codex-loop start --every 10m --sandbox workspace-write --max-runs 12 -- \
-  "Check CI; if it fails, diagnose it and apply the smallest fix"
+```text
+Run the tests every 5 minutes until they pass.
 
-codex-loop list
-codex-loop stop <job-id>
-codex-loop open <job-id>
+Run once now, then check CI every 10 minutes, at most 12 times.
+
+Stop the current loop.
 ```
 
-Jobs expire after seven days by default. State is stored in `~/.codex-loop/jobs.json`; logs are stored in `~/.codex-loop/logs/`.
+The first run normally starts after one interval. Ask for an immediate run to start it now. If the user supplies neither a run-count nor lifetime bound, the Skill defaults to 24 hours.
 
-## Lifecycle and TUI
+## Lifecycle
 
-`created → running ↔ waiting → completed`; requested termination uses `stopping → terminated`; errors enter `failed`.
+```text
+created -> waiting -> running -> waiting
+                      |          |
+                      +-> completed
+                      +-> terminated
+                      +-> failed
+```
 
-A background worker owns the lifecycle, so this is not a long-running Skill. `stop` interrupts the active Codex child process and waits for confirmed `terminated` state. The TUI cannot concurrently own an active loop session; after termination or natural completion, run `codex-loop open <job-id>` to enter that Codex TUI session.
+- Condition met, maximum runs reached, or expiry: `completed`
+- Explicit stop or `Ctrl-C` while waiting: `terminated`
+- Hook error: continuation stops and the current UI reports the error
 
-The implementation uses the officially supported `codex exec --json` and `codex exec resume <SESSION_ID>` interfaces.
+The current TUI does not accept input while waiting; the Codex process and computer must remain running. Loop state is isolated by Codex session and stored in the plugin's writable data directory.
+
+## Development checks
+
+```bash
+npm run check
+uv run --with pyyaml python ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/codex-loop
+```

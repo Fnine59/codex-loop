@@ -1,15 +1,12 @@
 {
   "name": "codex-loop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Run a prompt repeatedly in the same Codex session.",
+  "description": "A Codex plugin that repeats work inside the current TUI conversation.",
   "type": "module",
-  "bin": {
-    "codex-loop": "./src/cli.js"
-  },
   "scripts": {
-    "test": "node --test test/*.test.js",
-    "lint": "node --check src/*.js test/*.js",
+    "test": "node --test test/*.test.mjs",
+    "lint": "node --check plugins/codex-loop/scripts/*.mjs plugins/codex-loop/scripts/lib/*.mjs test/*.mjs",
     "check": "npm run lint && npm test"
   },
   "engines": {

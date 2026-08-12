@@ -1,0 +1,32 @@
+{
+  "name": "codex-loop",
+  "version": "0.2.0+codex.20260812160937",
+  "description": "Repeat work at an interval inside the current Codex conversation.",
+  "author": {
+    "name": "Fnine59",
+    "url": "https://github.com/Fnine59"
+  },
+  "homepage": "https://github.com/Fnine59/codex-loop#readme",
+  "repository": "https://github.com/Fnine59/codex-loop",
+  "keywords": [
+    "codex",
+    "loop",
+    "automation",
+    "hooks"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Loop",
+    "shortDescription": "Run timed loops in the current Codex conversation.",
+    "longDescription": "Start, continue, complete, or interrupt repeated Codex work without a daemon, cron job, remote thread, or secondary session.",
+    "developerName": "Fnine59",
+    "category": "Productivity",
+    "capabilities": [
+      "Automation"
+    ],
+    "defaultPrompt": [
+      "Every 5 minutes, run the tests until they pass.",
+      "Stop the current Codex loop."
+    ]
+  }
+}

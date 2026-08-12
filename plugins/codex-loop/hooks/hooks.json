@@ -1,0 +1,17 @@
+{
+  "description": "Continue active Codex loops in the current conversation.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"",
+            "timeout": 604800,
+            "statusMessage": "Codex Loop waiting"
+          }
+        ]
+      }
+    ]
+  }
+}
