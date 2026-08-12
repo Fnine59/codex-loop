@@ -11,13 +11,13 @@
 - Node.js 20+
 - 支持 Plugins 与 Hooks 的 Codex CLI
 
-## 本地安装
+## 安装
 
-在仓库根目录执行：
+在 Codex CLI 中执行：
 
 ```bash
-codex plugin marketplace add "$PWD"
-codex plugin add codex-loop@personal
+codex plugin marketplace add Fnine59/codex-loop
+codex plugin add codex-loop@fnine59
 ```
 
 然后启动 Codex TUI：
@@ -79,13 +79,13 @@ It starts no cron job, daemon, App Server, `codex exec` process, or secondary se
 - Node.js 20+
 - A Codex CLI release with Plugins and Hooks support
 
-## Local installation
+## Installation
 
-Run from the repository root:
+Run in Codex CLI:
 
 ```bash
-codex plugin marketplace add "$PWD"
-codex plugin add codex-loop@personal
+codex plugin marketplace add Fnine59/codex-loop
+codex plugin add codex-loop@fnine59
 ```
 
 Then start the Codex TUI:

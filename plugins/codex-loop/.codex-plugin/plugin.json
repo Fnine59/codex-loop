@@ -1,6 +1,6 @@
 {
   "name": "codex-loop",
-  "version": "0.2.0+codex.20260812165713",
+  "version": "0.2.0+codex.20260812173641",
   "description": "Repeat work at an interval inside the current Codex conversation.",
   "author": {
     "name": "Fnine59",
