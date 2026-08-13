@@ -93,7 +93,9 @@ loopcodex
 loopcodex --model gpt-5.6
 ```
 
-函数会为当前 TUI 创建独立 App Server，在会话退出时清理进程、Socket 和临时目录，并将 `loopcodex` 后面的参数原样交给 Codex。两处 `codex` 会复用定义在它前面的同名 alias 或 function，因此现有代理与启动配置仍可保留；也可以像本机一样显式换成对应的启动前缀。只用于 TUI 的模型、权限等参数放在第二处、`--remote` 之前。
+函数会为当前 TUI 创建独立 App Server，并将 `loopcodex` 后面的参数原样交给 Codex。正常结束 Codex 会话时，插件的 `SessionEnd` Hook 会先终止活动 Loop、中断正在运行的 App Server turn，并清理该 thread 的后台终端；函数随后清理 App Server 进程、Socket 和临时目录。两处 `codex` 会复用定义在它前面的同名 alias 或 function，因此现有代理与启动配置仍可保留；也可以像本机一样显式换成对应的启动前缀。只用于 TUI 的模型、权限等参数放在第二处、`--remote` 之前。
+
+某些终端工具的“关闭 tab”只会断开界面，但仍保留底层 PTY 和进程；这种情况下 Codex 会话实际上尚未结束，因此不会触发 `SessionEnd`。需要真正结束对应的终端进程，或先在 Codex 中执行 `/exit`。
 
 ### App Server 感知检查
 
@@ -253,7 +255,9 @@ loopcodex
 loopcodex --model gpt-5.6
 ```
 
-The function creates an isolated App Server for the current TUI, removes its process, socket, and temporary directory when the session exits, and forwards all arguments after `loopcodex` unchanged. Both `codex` calls reuse an alias or function defined earlier in the file, preserving an existing proxy or launch setup; you can also replace them explicitly with the same launcher prefix used on this machine. Put TUI-only model or permission flags on the second invocation before `--remote`.
+The function creates an isolated App Server for the current TUI and forwards all arguments after `loopcodex` unchanged. When Codex exits normally, the plugin's `SessionEnd` hook first terminates the active loop, interrupts its running App Server turn, and cleans that thread's background terminals; the function then removes the App Server process, socket, and temporary directory. Both `codex` calls reuse an alias or function defined earlier in the file, preserving an existing proxy or launch setup; you can also replace them explicitly with the same launcher prefix used on this machine. Put TUI-only model or permission flags on the second invocation before `--remote`.
+
+Some terminal tools can “close” a tab by detaching its UI while retaining the underlying PTY and processes. In that case the Codex session has not actually ended, so `SessionEnd` cannot fire. End the corresponding terminal process, or run `/exit` in Codex first.
 
 ### Verify App Server detection
 

@@ -1,6 +1,6 @@
 {
   "name": "codex-loop",
-  "version": "0.2.0+codex.20260812200904",
+  "version": "0.2.0+codex.20260813153402",
   "description": "Repeat work on adaptive or Cron schedules inside the current Codex conversation.",
   "author": {
     "name": "Fnine59",

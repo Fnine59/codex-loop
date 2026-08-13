@@ -16,6 +16,11 @@ import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 const MAX_SLEEP_CHUNK_MS = 60_000;
 const IDLE_POLL_MS = 1_000;
 
+export function threadAcceptsTurnStart(thread) {
+  if (thread?.canAcceptDirectInput === true) return true;
+  return thread?.canAcceptDirectInput == null && thread?.status?.type === "idle";
+}
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, milliseconds)));
 }
@@ -87,10 +92,10 @@ export async function runWake(sessionId, loopId, wakeToken, options = {}) {
       }
       const thread = await client.readThread(state.threadId, false);
       if (!thread) throw new Error(`App Server thread is unavailable: ${state.threadId}.`);
-      if (thread.status?.type === "idle" && thread.canAcceptDirectInput !== false) break;
       if (["notLoaded", "systemError"].includes(thread.status?.type)) {
         throw new Error(`App Server thread is ${thread.status.type}: ${state.threadId}.`);
       }
+      if (threadAcceptsTurnStart(thread)) break;
       await context.sleep(IDLE_POLL_MS);
     }
 

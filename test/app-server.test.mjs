@@ -13,7 +13,7 @@ import { createControlMarker, createNextMarker, createStartMarker } from "../plu
 import { writePendingConfig } from "../plugins/codex-loop/scripts/lib/pending.mjs";
 import { readLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
 import { handleStop } from "../plugins/codex-loop/scripts/stop-hook.mjs";
-import { runWake } from "../plugins/codex-loop/scripts/wake-worker.mjs";
+import { runWake, threadAcceptsTurnStart } from "../plugins/codex-loop/scripts/wake-worker.mjs";
 
 function hookInput(message, turnId = "turn-start") {
   return {
@@ -67,6 +67,19 @@ test("uses the App Server socket exported by the loopcodex shell function", () =
   }
 });
 
+test("uses direct-input capability instead of requiring an idle thread", () => {
+  assert.equal(threadAcceptsTurnStart({
+    status: { type: "active", activeFlags: [] },
+    canAcceptDirectInput: true,
+  }), true);
+  assert.equal(threadAcceptsTurnStart({
+    status: { type: "active", activeFlags: [] },
+    canAcceptDirectInput: false,
+  }), false);
+  assert.equal(threadAcceptsTurnStart({ status: { type: "idle" } }), true);
+  assert.equal(threadAcceptsTurnStart({ status: { type: "active", activeFlags: [] } }), false);
+});
+
 test("speaks App Server requests over an injected transport", async () => {
   const transport = {
     async connect() {},
@@ -88,6 +101,7 @@ test("speaks App Server requests over an injected transport", async () => {
       else if (message.method === "turn/start") result = {
         turn: { id: "loop-turn-1", status: "inProgress", items: [] },
       };
+      else if (message.method === "thread/backgroundTerminals/clean") result = {};
       queueMicrotask(() => this.onMessage(JSON.stringify({ id: message.id, result })));
     },
     close() {},
@@ -97,6 +111,7 @@ test("speaks App Server requests over an injected transport", async () => {
   assert.deepEqual(await client.listLoadedThreadIds(), ["thread-1"]);
   assert.equal((await client.readThread("thread-1", true)).status.type, "idle");
   assert.equal((await client.startTurn("thread-1", "continue")).id, "loop-turn-1");
+  assert.deepEqual(await client.cleanBackgroundTerminals("thread-1"), {});
   client.close();
 });
 
@@ -170,7 +185,7 @@ test("runs an App Server loop without blocking the Stop hook", async (context) =
   let startedPrompt = null;
   const client = {
     async readThread() {
-      return { status: { type: "idle" }, canAcceptDirectInput: true };
+      return { status: { type: "active", activeFlags: [] }, canAcceptDirectInput: true };
     },
     async startTurn(_threadId, prompt) {
       startedPrompt = prompt;

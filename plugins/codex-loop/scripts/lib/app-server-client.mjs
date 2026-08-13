@@ -312,6 +312,10 @@ export class AppServerClient {
     return this.request("turn/interrupt", { threadId, turnId });
   }
 
+  async cleanBackgroundTerminals(threadId) {
+    return this.request("thread/backgroundTerminals/clean", { threadId });
+  }
+
   fail(error) {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);

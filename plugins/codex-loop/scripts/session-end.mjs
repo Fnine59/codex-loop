@@ -1,9 +1,31 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "node:url";
+import { AppServerClient } from "./lib/app-server-client.mjs";
 import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 
 const ACTIVE_STATUSES = new Set(["waiting", "launching", "running"]);
+
+async function cleanAppServerThread(threadId, turnId) {
+  const client = new AppServerClient({ requestTimeoutMs: 1_000 });
+  try {
+    await client.connect();
+    if (turnId) {
+      try {
+        await client.interruptTurn(threadId, turnId);
+      } catch {
+        // Cleaning the thread can still terminate a command after turn interruption fails.
+      }
+    }
+    try {
+      await client.cleanBackgroundTerminals(threadId);
+    } catch {
+      // Older App Server versions may not expose background-terminal cleanup.
+    }
+  } finally {
+    client.close();
+  }
+}
 
 export async function handleSessionEnd(input, options = {}) {
   if (!input || input.hook_event_name !== "SessionEnd" || typeof input.session_id !== "string") return false;
@@ -13,6 +35,9 @@ export async function handleSessionEnd(input, options = {}) {
   if (!state || !ACTIVE_STATUSES.has(state.status)) return false;
 
   const now = options.clock?.() ?? Date.now();
+  const appServerThread = state.backend === "app-server" && state.threadId
+    ? { threadId: state.threadId, turnId: state.activeTurnId ?? null }
+    : null;
   await writeLoopState({
     ...state,
     status: "terminated",
@@ -22,6 +47,17 @@ export async function handleSessionEnd(input, options = {}) {
     wakeToken: null,
     activeTurnId: null,
   }, dataDir);
+
+  if (appServerThread) {
+    try {
+      await (options.cleanAppServerThread ?? cleanAppServerThread)(
+        appServerThread.threadId,
+        appServerThread.turnId,
+      );
+    } catch {
+      // State is already terminal. App Server cleanup remains best-effort during shutdown.
+    }
+  }
   return true;
 }
 
