@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+set -u
+
+runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/loop-codex.XXXXXX")" || exit 1
+socket_path="${runtime_dir}/app-server.sock"
+server_log="${runtime_dir}/app-server.log"
+server_pid=""
+codex_bin="${CODEX_LOOP_CODEX_BIN:-codex}"
+
+cleanup() {
+    local exit_status=$?
+    trap - EXIT
+
+    if [[ -n "${server_pid}" ]] && kill -0 "${server_pid}" 2>/dev/null; then
+        kill -TERM "${server_pid}" 2>/dev/null || true
+    fi
+    if [[ -n "${server_pid}" ]]; then
+        wait "${server_pid}" 2>/dev/null || true
+    fi
+
+    rm -f -- "${socket_path}" "${server_log}"
+    rmdir -- "${runtime_dir}" 2>/dev/null || true
+    exit "${exit_status}"
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Stop hooks are children of App Server. Export the socket before launching the
+# server so both App Server and the remote TUI can locate the same endpoint.
+export CODEX_LOOP_APP_SERVER_SOCKET="${socket_path}"
+
+"${codex_bin}" app-server --listen "unix://${socket_path}" \
+    >"${server_log}" 2>&1 &
+server_pid=$!
+
+for (( _attempt = 0; _attempt < 100; _attempt += 1 )); do
+    [[ -S "${socket_path}" ]] && break
+    kill -0 "${server_pid}" 2>/dev/null || break
+    sleep 0.05
+done
+
+if [[ ! -S "${socket_path}" ]]; then
+    printf 'loop-codex: App Server failed to start.\n' >&2
+    [[ -s "${server_log}" ]] && tail -n 20 "${server_log}" >&2
+    exit 1
+fi
+
+"${codex_bin}" --remote "unix://${socket_path}" "$@"
