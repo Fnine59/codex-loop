@@ -29,4 +29,10 @@ test("a stale plugin cache path exits cleanly", async (context) => {
     env: { ...process.env, PLUGIN_ROOT: missingRoot },
   });
   assert.equal(sessionEnd.stdout, "");
+
+  const preToolCommand = hooks.hooks.PreToolUse[0].hooks[0].command;
+  const preTool = await execFileAsync("/bin/sh", ["-c", preToolCommand], {
+    env: { ...process.env, PLUGIN_ROOT: missingRoot },
+  });
+  assert.deepEqual(JSON.parse(preTool.stdout), {});
 });

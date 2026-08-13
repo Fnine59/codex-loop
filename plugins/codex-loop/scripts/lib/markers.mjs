@@ -15,6 +15,7 @@ const NEXT_PATTERN = /<!--\s*codex-loop:v1:next:([a-f0-9]{12}):(\d+(?:s|m|h|d))\
 const ID_PATTERN = /^[a-f0-9]{12}$/;
 const MAX_TASK_LENGTH = 12_000;
 const MAX_UNTIL_LENGTH = 4_000;
+const MAX_SESSION_ID_LENGTH = 200;
 const MAX_RUNS = 10_000;
 
 export function newLoopId() {
@@ -31,6 +32,13 @@ function assertText(value, name, maxLength) {
 export function validateStartConfig(config) {
   if (!config || config.v !== 1) throw new Error("Unsupported Codex Loop marker version.");
   if (!ID_PATTERN.test(config.id ?? "")) throw new Error("Invalid loop ID.");
+  if (config.sessionIdHint !== undefined && config.sessionIdHint !== null && (
+    typeof config.sessionIdHint !== "string" ||
+    config.sessionIdHint.trim().length === 0 ||
+    config.sessionIdHint.length > MAX_SESSION_ID_LENGTH
+  )) {
+    throw new Error("Invalid session ID hint.");
+  }
   assertText(config.task, "Task", MAX_TASK_LENGTH);
   if (config.intervalMs !== null && (
     !Number.isSafeInteger(config.intervalMs) ||

@@ -1,6 +1,19 @@
 {
   "description": "Schedule and continue adaptive or Cron loops in the current conversation.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^create_goal$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/goal-guard.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/goal-guard.mjs\"; else printf '{}\\n'; fi",
+            "timeout": 3,
+            "statusMessage": "Keeping Codex Loop and durable goals separate"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

@@ -49,6 +49,30 @@ export async function writePendingConfig(config, pendingDir = defaultPendingDir(
   }
 }
 
+export async function findPendingConfigForSession(sessionId, pendingDir = defaultPendingDir()) {
+  if (typeof sessionId !== "string" || sessionId.length === 0) return null;
+  await cleanStalePending(pendingDir);
+  let entries;
+  try {
+    entries = await fs.readdir(pendingDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    try {
+      const config = validateStartConfig(JSON.parse(
+        await fs.readFile(path.join(pendingDir, entry.name), "utf8"),
+      ));
+      if (config.sessionIdHint === sessionId) return config;
+    } catch {
+      // A malformed or concurrently consumed pending file cannot arm this session.
+    }
+  }
+  return null;
+}
+
 export async function takePendingConfig(id, pendingDir = defaultPendingDir()) {
   const file = pendingPath(id, pendingDir);
   try {

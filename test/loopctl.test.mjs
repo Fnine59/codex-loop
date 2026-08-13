@@ -29,7 +29,13 @@ test("loopctl creates a short marker backed by pending configuration", async (co
     "--now",
     "--",
     "run tests",
-  ], { env: { ...process.env, CODEX_LOOP_PENDING_DIR: pendingDir } });
+  ], {
+    env: {
+      ...process.env,
+      CODEX_LOOP_PENDING_DIR: pendingDir,
+      CODEX_THREAD_ID: "loopctl-session-1",
+    },
+  });
   const id = parseStartMarker(stdout);
   assert.match(id, /^[a-f0-9]{12}$/);
   const config = await takePendingConfig(id, pendingDir);
@@ -37,6 +43,7 @@ test("loopctl creates a short marker backed by pending configuration", async (co
   assert.equal(config.maxRuns, 2);
   assert.equal(config.immediate, true);
   assert.equal(config.cronExpression, "* * * * *");
+  assert.equal(config.sessionIdHint, "loopctl-session-1");
 });
 
 test("loopctl creates an idempotent stop marker", async () => {

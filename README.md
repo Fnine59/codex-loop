@@ -136,6 +136,7 @@ App Server 接口目前仍属于 Codex 的实验性能力。如果当前 CLI 不
 - 固定调度的第一轮默认等到下一个匹配时间；明确要求“立即执行”时先立即跑一轮。
 - 一轮尚未结束时若跨过多个计划时间，只排队补一轮，不逐个回填错过的 tick。
 - 没有结束边界时默认最多运行 24 小时；“直到我说停止”不会自动到期，也不会因为单轮任务完成而自动结束。
+- Codex Loop 与 Codex durable goal 都会接管续轮，因此不能在同一项工作上叠加使用。插件会阻止已准备或已激活的 Loop 再创建 goal；启动 Loop 时也不应先创建 goal。
 
 ## 生命周期与资源
 
@@ -298,6 +299,7 @@ Stop the current loop.
 - A fixed schedule normally starts at the next matching time; ask for an immediate run to run once now.
 - If several scheduled times pass while one run is active, exactly one catch-up pass is queued; missed ticks are not backfilled individually.
 - With no ending bound, a loop defaults to 24 hours. An explicit “until I say stop” request has no expiry and does not auto-complete after one successful pass.
+- Codex Loop and Codex durable goals both own turn continuation, so do not combine them for the same work. The plugin blocks goal creation once a Loop is prepared or active, and Loop startup must not create a goal first.
 
 ## Lifecycle and resources
 

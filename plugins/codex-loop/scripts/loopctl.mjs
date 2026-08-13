@@ -67,6 +67,7 @@ async function start(args) {
   const config = {
     v: 1,
     id: newLoopId(),
+    sessionIdHint: process.env.CODEX_THREAD_ID?.trim() || null,
     task,
     until: values.until?.trim() || null,
     intervalMs,

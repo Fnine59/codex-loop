@@ -146,23 +146,24 @@ export function continuationPrompt(state) {
   const stopOnly = state.expiresAt === null;
   const task = `[Codex Loop ${state.id}] Run ${state.runs + 1}.\n\nTask: ${state.task}`;
   const condition = state.until ? `\nCompletion condition: ${state.until}` : "";
+  const ownership = "Codex Loop is the sole scheduler for this work. Do not call create_goal or use durable-goal auto-continuation. End this turn after exactly one pass so the Stop hook can schedule the next pass.";
 
   if (state.scheduleMode === "dynamic") {
     const nextMarker = `<!-- codex-loop:v1:next:${state.id}:<delay> -->`;
     const schedule = `After the pass, choose the next delay from ${formatDuration(MIN_DYNAMIC_INTERVAL_MS)} to ${formatDuration(MAX_DYNAMIC_INTERVAL_MS)} based on what you observed. To continue, include exactly one marker in the final response by replacing <delay> with a whole duration such as 1m, 30m, or 1h: ${nextMarker} If the marker is missing or invalid, the hook uses ${formatDuration(DEFAULT_DYNAMIC_INTERVAL_MS)}.`;
     if (stopOnly) {
-      return `${task}\n\nPerform exactly one pass in the current working directory. This loop ends only when the user asks to stop it or ends the session. Do not mark it complete. ${schedule} Do not start another loop.`;
+      return `${task}\n\n${ownership} Perform exactly one pass in the current working directory. This loop ends only when the user asks to stop it or ends the session. Do not mark it complete. ${schedule} Do not start another loop.`;
     }
     const completionMarker = createControlMarker("complete", state.id);
-    return `${task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker and do not include a next-delay marker: ${completionMarker} Otherwise, ${schedule} Do not start another loop.`;
+    return `${task}${condition}\n\n${ownership} Perform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker and do not include a next-delay marker: ${completionMarker} Otherwise, ${schedule} Do not start another loop.`;
   }
 
   const scheduling = state.scheduleMode === "cron"
     ? `The loop follows ${state.cadenceLabel ?? `cron ${state.cronExpression}`} in local time. If scheduled times pass while a run is active, queue one catch-up pass only; do not backfill every missed tick.`
     : `The hook waits ${formatDuration(state.intervalMs)} after this pass before the next run.`;
   if (stopOnly) {
-    return `${task}\n\nPerform exactly one pass in the current working directory, then finish normally. This loop ends only when the user asks to stop it or ends the session. ${scheduling} Do not mark it complete and do not start another loop.`;
+    return `${task}\n\n${ownership} Perform exactly one pass in the current working directory, then finish normally. This loop ends only when the user asks to stop it or ends the session. ${scheduling} Do not mark it complete and do not start another loop.`;
   }
   const completionMarker = createControlMarker("complete", state.id);
-  return `${task}${condition}\n\nPerform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker in the final response: ${completionMarker}\nOtherwise finish normally. ${scheduling} Do not start another loop.`;
+  return `${task}${condition}\n\n${ownership} Perform exactly one pass in the current working directory. If the task or completion condition is definitely satisfied, include this exact marker in the final response: ${completionMarker}\nOtherwise finish normally. ${scheduling} Do not start another loop.`;
 }
