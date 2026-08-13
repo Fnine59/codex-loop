@@ -54,6 +54,19 @@ test("encodes masked WebSocket frames for Unix App Server transport", () => {
   }
 });
 
+test("uses the App Server socket exported by the loopcodex shell function", () => {
+  const previous = process.env.CODEX_LOOP_APP_SERVER_SOCKET;
+  process.env.CODEX_LOOP_APP_SERVER_SOCKET = "/tmp/codex-loop-custom.sock";
+  try {
+    const client = new AppServerClient();
+    assert.equal(client.transport.socketPath, "/tmp/codex-loop-custom.sock");
+    client.close();
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_LOOP_APP_SERVER_SOCKET;
+    else process.env.CODEX_LOOP_APP_SERVER_SOCKET = previous;
+  }
+});
+
 test("speaks App Server requests over an injected transport", async () => {
   const transport = {
     async connect() {},
