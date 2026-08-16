@@ -65,3 +65,4 @@ created -> waiting -> launching -> running -> waiting
 ```
 
 Never claim a loop is active unless the start-marker command succeeded.
+An App Server usage-limit failure leaves the loop waiting and retries the same uncounted pass after the reported reset time or bounded backoff. Do not start a replacement loop for that condition.

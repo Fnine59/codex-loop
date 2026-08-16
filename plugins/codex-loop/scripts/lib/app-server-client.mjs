@@ -4,8 +4,13 @@ import os from "node:os";
 import path from "node:path";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const MAX_CACHED_TURN_COMPLETIONS = 100;
 const MAX_FRAME_BYTES = 128 * 1024 * 1024;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+function turnCompletionKey(threadId, turnId) {
+  return `${threadId}\u0000${turnId}`;
+}
 
 export function defaultAppServerSocketPath() {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
@@ -219,6 +224,8 @@ export class AppServerClient {
     this.nextId = 1;
     this.pending = new Map();
     this.onNotification = options.onNotification ?? (() => {});
+    this.completedTurns = new Map();
+    this.turnCompletionWaiters = new Map();
     this.connected = false;
     this.closed = false;
   }
@@ -245,6 +252,7 @@ export class AppServerClient {
       return;
     }
     if (message.method && message.id === undefined) {
+      this.captureTurnCompletion(message);
       this.onNotification(message);
       return;
     }
@@ -254,6 +262,38 @@ export class AppServerClient {
     clearTimeout(pending.timer);
     if (message.error !== undefined) pending.reject(responseError(message.error));
     else pending.resolve(message.result);
+  }
+
+  captureTurnCompletion(message) {
+    const threadId = message.method === "turn/completed" ? message.params?.threadId : null;
+    const turn = message.params?.turn;
+    if (!threadId || !turn?.id) return;
+    const key = turnCompletionKey(threadId, turn.id);
+    const waiters = this.turnCompletionWaiters.get(key);
+    if (waiters) {
+      this.turnCompletionWaiters.delete(key);
+      for (const waiter of waiters) waiter.resolve(turn);
+      return;
+    }
+    this.completedTurns.set(key, turn);
+    if (this.completedTurns.size > MAX_CACHED_TURN_COMPLETIONS) {
+      this.completedTurns.delete(this.completedTurns.keys().next().value);
+    }
+  }
+
+  waitForTurnCompletion(threadId, turnId) {
+    const key = turnCompletionKey(threadId, turnId);
+    if (this.completedTurns.has(key)) {
+      const turn = this.completedTurns.get(key);
+      this.completedTurns.delete(key);
+      return Promise.resolve(turn);
+    }
+    if (this.closed) return Promise.reject(new Error("App Server client is closed."));
+    return new Promise((resolve, reject) => {
+      const waiters = this.turnCompletionWaiters.get(key) ?? new Set();
+      waiters.add({ resolve, reject });
+      this.turnCompletionWaiters.set(key, waiters);
+    });
   }
 
   request(method, params = {}) {
@@ -322,6 +362,10 @@ export class AppServerClient {
       pending.reject(error);
     }
     this.pending.clear();
+    for (const waiters of this.turnCompletionWaiters.values()) {
+      for (const waiter of waiters) waiter.reject(error);
+    }
+    this.turnCompletionWaiters.clear();
   }
 
   close() {

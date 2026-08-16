@@ -11,7 +11,8 @@ import {
 } from "../plugins/codex-loop/scripts/lib/app-server-client.mjs";
 import { createControlMarker, createNextMarker, createStartMarker } from "../plugins/codex-loop/scripts/lib/markers.mjs";
 import { writePendingConfig } from "../plugins/codex-loop/scripts/lib/pending.mjs";
-import { readLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
+import { activateLoop, endLoop } from "../plugins/codex-loop/scripts/lib/loop-state.mjs";
+import { readLoopState, writeLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
 import { handleStop } from "../plugins/codex-loop/scripts/stop-hook.mjs";
 import { runWake, threadAcceptsTurnStart } from "../plugins/codex-loop/scripts/wake-worker.mjs";
 
@@ -102,7 +103,15 @@ test("speaks App Server requests over an injected transport", async () => {
         turn: { id: "loop-turn-1", status: "inProgress", items: [] },
       };
       else if (message.method === "thread/backgroundTerminals/clean") result = {};
-      queueMicrotask(() => this.onMessage(JSON.stringify({ id: message.id, result })));
+      queueMicrotask(() => {
+        this.onMessage(JSON.stringify({ id: message.id, result }));
+        if (message.method === "turn/start") {
+          this.onMessage(JSON.stringify({
+            method: "turn/completed",
+            params: { threadId: "thread-1", turn: { id: "loop-turn-1", status: "completed" } },
+          }));
+        }
+      });
     },
     close() {},
   };
@@ -111,6 +120,7 @@ test("speaks App Server requests over an injected transport", async () => {
   assert.deepEqual(await client.listLoadedThreadIds(), ["thread-1"]);
   assert.equal((await client.readThread("thread-1", true)).status.type, "idle");
   assert.equal((await client.startTurn("thread-1", "continue")).id, "loop-turn-1");
+  assert.equal((await client.waitForTurnCompletion("thread-1", "loop-turn-1")).status, "completed");
   assert.deepEqual(await client.cleanBackgroundTerminals("thread-1"), {});
   client.close();
 });
@@ -191,6 +201,9 @@ test("runs an App Server loop without blocking the Stop hook", async (context) =
       startedPrompt = prompt;
       return { id: "loop-turn-1" };
     },
+    async waitForTurnCompletion() {
+      return { id: "loop-turn-1", status: "completed" };
+    },
     async interruptTurn() {},
   };
   assert.equal(await runWake(
@@ -219,4 +232,199 @@ test("runs an App Server loop without blocking the Stop hook", async (context) =
   const stopped = await handleStop(hookInput(createControlMarker("stop"), "stop-turn"), options);
   assert.match(stopped.systemMessage, /terminated/);
   assert.equal((await readLoopState("session-1", dataDir)).status, "terminated");
+});
+
+async function writeWakeState(dataDir, sessionId, loopId, now) {
+  const state = activateLoop({
+    id: loopId,
+    task: "reply hi",
+    until: null,
+    intervalMs: null,
+    cronExpression: null,
+    cadenceLabel: null,
+    ttlMs: null,
+    maxRuns: null,
+    immediate: true,
+  }, {
+    session_id: sessionId,
+    cwd: "/tmp/project",
+  }, now, {
+    backend: "app-server",
+    threadId: `thread-${loopId}`,
+  });
+  const armed = { ...state, wakeToken: `wake-${loopId}` };
+  await writeLoopState(armed, dataDir);
+  return armed;
+}
+
+function terminalClient(loopId, completedTurn) {
+  return {
+    async readThread() {
+      return { status: { type: "idle" }, canAcceptDirectInput: true };
+    },
+    async startTurn() {
+      return { id: `turn-${loopId}` };
+    },
+    async waitForTurnCompletion() {
+      return completedTurn;
+    },
+    async interruptTurn() {},
+  };
+}
+
+test("retries an App Server loop after the reported usage-limit reset", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-limit-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "limit-loop";
+  const sessionId = "limit-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  const scheduled = [];
+  const error = {
+    message: "You've hit your usage limit. Please try again at Aug 20th, 2026 11:42 AM.",
+    codexErrorInfo: "usageLimitExceeded",
+  };
+  const client = terminalClient(loopId, null);
+  client.waitForTurnCompletion = () => new Promise(() => {});
+  client.readThread = async (_threadId, includeTurns) => includeTurns
+    ? { turns: [{ id: `turn-${loopId}`, status: "failed", error }] }
+    : { status: { type: "idle" }, canAcceptDirectInput: true };
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client,
+    clock: () => now,
+    dataDir,
+    scheduleWake: async (wake) => scheduled.push(wake),
+    sleep: async () => {},
+  }), true);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "waiting");
+  assert.equal(state.runs, 0);
+  assert.equal(state.activeTurnId, null);
+  assert.equal(state.lastErrorCode, "usageLimitExceeded");
+  assert.equal(state.lastDelaySource, "usage-limit-reset");
+  assert.equal(state.nextRunAt, Date.parse("Aug 20, 2026 11:42 AM") + 60_000);
+  assert.equal(state.usageLimitRetries, 1);
+  assert.notEqual(state.wakeToken, initial.wakeToken);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].wakeToken, state.wakeToken);
+});
+
+test("exits the monitor when the Stop hook has already completed the turn", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-stop-owner-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "stop-owner-loop";
+  const sessionId = "stop-owner-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  const client = terminalClient(loopId, null);
+  client.waitForTurnCompletion = () => new Promise(() => {});
+  client.readThread = async (_threadId, includeTurns) => includeTurns
+    ? { turns: [{ id: `turn-${loopId}`, status: "inProgress" }] }
+    : { status: { type: "idle" }, canAcceptDirectInput: true };
+  let ownershipTransferred = false;
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client,
+    clock: () => now,
+    dataDir,
+    sleep: async () => {
+      if (ownershipTransferred) return;
+      ownershipTransferred = true;
+      const running = await readLoopState(sessionId, dataDir);
+      await writeLoopState(endLoop(running, "completed", "max-runs", now), dataDir);
+    },
+  }), false);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "completed");
+  assert.equal(state.endReason, "max-runs");
+});
+
+test("fails an App Server loop on a non-retryable turn error", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-failure-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "failed-loop";
+  const sessionId = "failed-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client: terminalClient(loopId, {
+      id: `turn-${loopId}`,
+      status: "failed",
+      error: { message: "Model provider returned an invalid response.", codexErrorInfo: "other" },
+    }),
+    clock: () => now,
+    dataDir,
+    scheduleWake: async () => assert.fail("non-retryable errors must not schedule a wake"),
+    sleep: async () => {},
+  }), false);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "failed");
+  assert.equal(state.endReason, "turn-failed");
+  assert.match(state.lastError, /invalid response/);
+});
+
+test("terminates an App Server loop when its monitored turn is interrupted", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-interrupt-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "interrupted-loop";
+  const sessionId = "interrupted-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client: terminalClient(loopId, { id: `turn-${loopId}`, status: "interrupted" }),
+    clock: () => now,
+    dataDir,
+    scheduleWake: async () => assert.fail("interrupted turns must not schedule a wake"),
+    sleep: async () => {},
+  }), false);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "terminated");
+  assert.equal(state.endReason, "interrupted-turn");
+});
+
+test("does not revive a stopped loop when a late usage-limit completion arrives", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-stale-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "stale-loop";
+  const sessionId = "stale-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  let resolveCompletion;
+  let notifyMonitoring;
+  const monitoring = new Promise((resolve) => { notifyMonitoring = resolve; });
+  const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+  const client = terminalClient(loopId, null);
+  client.waitForTurnCompletion = async () => {
+    notifyMonitoring();
+    return completion;
+  };
+  const scheduled = [];
+  const wake = runWake(sessionId, loopId, initial.wakeToken, {
+    client,
+    clock: () => now,
+    dataDir,
+    scheduleWake: async (next) => scheduled.push(next),
+    sleep: async () => {},
+  });
+  await monitoring;
+  const running = await readLoopState(sessionId, dataDir);
+  await writeLoopState(endLoop(running, "terminated", "requested", now), dataDir);
+  resolveCompletion({
+    id: `turn-${loopId}`,
+    status: "failed",
+    error: { message: "You've hit your usage limit.", codexErrorInfo: "usageLimitExceeded" },
+  });
+
+  assert.equal(await wake, false);
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "terminated");
+  assert.equal(state.endReason, "requested");
+  assert.equal(scheduled.length, 0);
 });

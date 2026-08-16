@@ -9,9 +9,42 @@ import { createControlMarker, parseNextMarker } from "./markers.mjs";
 
 export const ACTIVE_STATUSES = new Set(["waiting", "launching", "running"]);
 const MAX_SAVED_MESSAGE = 2_000;
+const MAX_USAGE_LIMIT_RETRY_MS = 60 * 60 * 1_000;
+const MIN_USAGE_LIMIT_RETRY_MS = 5 * 60 * 1_000;
+const USAGE_LIMIT_RESET_GRACE_MS = 60_000;
 
 function capAtExpiry(timestamp, expiresAt) {
   return expiresAt === null ? timestamp : Math.min(timestamp, expiresAt);
+}
+
+function errorMessage(error) {
+  return String(error?.message ?? error ?? "App Server turn failed.").slice(0, MAX_SAVED_MESSAGE);
+}
+
+function normalizedErrorCode(error) {
+  const code = error?.codexErrorInfo ?? error?.codex_error_info;
+  return typeof code === "string" ? code.replace(/[^a-z]/gi, "").toLowerCase() : "";
+}
+
+export function isUsageLimitError(error) {
+  return normalizedErrorCode(error) === "usagelimitexceeded" || /\busage limit\b/i.test(errorMessage(error));
+}
+
+function reportedUsageLimitRetryAt(error, now) {
+  const match = errorMessage(error).match(/\btry again at\s+(.+?)(?:\.\s*$|$)/i);
+  if (match) {
+    const normalized = match[1].replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1");
+    const resetAt = Date.parse(normalized);
+    if (Number.isFinite(resetAt) && resetAt > now) return resetAt + USAGE_LIMIT_RESET_GRACE_MS;
+  }
+  return null;
+}
+
+export function usageLimitRetryAt(error, now, retryCount = 1) {
+  const reportedRetryAt = reportedUsageLimitRetryAt(error, now);
+  if (reportedRetryAt !== null) return reportedRetryAt;
+  const exponent = Math.max(0, Math.min(retryCount - 1, 10));
+  return now + Math.min(MAX_USAGE_LIMIT_RETRY_MS, MIN_USAGE_LIMIT_RETRY_MS * (2 ** exponent));
 }
 
 export function activateLoop(config, input, now, runtime = { backend: "stop-hook" }) {
@@ -55,6 +88,9 @@ export function activateLoop(config, input, now, runtime = { backend: "stop-hook
     endReason: null,
     lastAssistantMessage: null,
     lastError: null,
+    lastErrorCode: null,
+    usageLimitRetries: 0,
+    lastLimitedAt: null,
   };
 }
 
@@ -96,6 +132,8 @@ export function beginRun(state, now, { activeTurnId = null } = {}) {
     wakeToken: null,
     activeTurnId,
     lastStartedAt: now,
+    lastError: null,
+    lastErrorCode: null,
   };
 }
 
@@ -105,6 +143,29 @@ export function recordRunCompletion(state, message, now) {
     runs: state.runs + 1,
     lastCompletedAt: now,
     lastAssistantMessage: String(message ?? "").slice(-MAX_SAVED_MESSAGE),
+    lastError: null,
+    lastErrorCode: null,
+    usageLimitRetries: 0,
+  };
+}
+
+export function scheduleUsageLimitRetry(state, error, now) {
+  const usageLimitRetries = (state.usageLimitRetries ?? 0) + 1;
+  const reportedRetryAt = reportedUsageLimitRetryAt(error, now);
+  const retryAt = reportedRetryAt ?? usageLimitRetryAt(error, now, usageLimitRetries);
+  const nextRunAt = capAtExpiry(retryAt, state.expiresAt);
+  return {
+    ...state,
+    status: "waiting",
+    activeTurnId: null,
+    nextRunAt,
+    wakeToken: null,
+    lastDelayMs: Math.max(0, nextRunAt - now),
+    lastDelaySource: reportedRetryAt === null ? "usage-limit-backoff" : "usage-limit-reset",
+    lastError: errorMessage(error),
+    lastErrorCode: "usageLimitExceeded",
+    usageLimitRetries,
+    lastLimitedAt: now,
   };
 }
 
