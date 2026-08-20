@@ -311,6 +311,42 @@ test("retries an App Server loop after the reported usage-limit reset", async (c
   assert.equal(scheduled[0].wakeToken, state.wakeToken);
 });
 
+test("retries an App Server loop after a structured HTTP 429 error", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-429-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "throttled-loop";
+  const sessionId = "throttled-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  const scheduled = [];
+  const error = {
+    message: "exceeded retry limit, last status: 429 Too Many Requests, request id: request-1",
+    codex_error_info: {
+      response_too_many_failed_attempts: { http_status_code: 429 },
+    },
+  };
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client: terminalClient(loopId, { id: `turn-${loopId}`, status: "failed", error }),
+    clock: () => now,
+    dataDir,
+    scheduleWake: async (wake) => scheduled.push(wake),
+    sleep: async () => {},
+  }), true);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "waiting");
+  assert.equal(state.runs, 0);
+  assert.equal(state.activeTurnId, null);
+  assert.equal(state.lastErrorCode, "usageLimitExceeded");
+  assert.equal(state.lastDelaySource, "usage-limit-backoff");
+  assert.equal(state.nextRunAt, now + 5 * 60_000);
+  assert.equal(state.usageLimitRetries, 1);
+  assert.notEqual(state.wakeToken, initial.wakeToken);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].wakeToken, state.wakeToken);
+});
+
 test("exits the monitor when the Stop hook has already completed the turn", async (context) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-stop-owner-data-"));
   context.after(() => fs.rm(dataDir, { recursive: true, force: true }));

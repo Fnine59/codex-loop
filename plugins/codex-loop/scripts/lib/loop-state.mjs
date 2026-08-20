@@ -26,8 +26,17 @@ function normalizedErrorCode(error) {
   return typeof code === "string" ? code.replace(/[^a-z]/gi, "").toLowerCase() : "";
 }
 
+function isTooManyRequestsError(error) {
+  const info = error?.codexErrorInfo ?? error?.codex_error_info;
+  const details = info?.responseTooManyFailedAttempts ?? info?.response_too_many_failed_attempts;
+  const status = details?.httpStatusCode ?? details?.http_status_code;
+  return Number(status) === 429 || /\b429\s+Too Many Requests\b/i.test(errorMessage(error));
+}
+
 export function isUsageLimitError(error) {
-  return normalizedErrorCode(error) === "usagelimitexceeded" || /\busage limit\b/i.test(errorMessage(error));
+  return normalizedErrorCode(error) === "usagelimitexceeded" ||
+    /\busage limit\b/i.test(errorMessage(error)) ||
+    isTooManyRequestsError(error);
 }
 
 function reportedUsageLimitRetryAt(error, now) {
