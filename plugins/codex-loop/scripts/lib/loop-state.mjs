@@ -9,7 +9,7 @@ import { createControlMarker, parseNextMarker } from "./markers.mjs";
 
 export const ACTIVE_STATUSES = new Set(["waiting", "launching", "running"]);
 const MAX_SAVED_MESSAGE = 2_000;
-const MAX_USAGE_LIMIT_RETRY_MS = 60 * 60 * 1_000;
+const MAX_USAGE_LIMIT_RETRY_MS = 6 * 60 * 60 * 1_000;
 const MIN_USAGE_LIMIT_RETRY_MS = 5 * 60 * 1_000;
 const USAGE_LIMIT_RESET_GRACE_MS = 60_000;
 

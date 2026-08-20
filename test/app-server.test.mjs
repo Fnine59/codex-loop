@@ -11,7 +11,11 @@ import {
 } from "../plugins/codex-loop/scripts/lib/app-server-client.mjs";
 import { createControlMarker, createNextMarker, createStartMarker } from "../plugins/codex-loop/scripts/lib/markers.mjs";
 import { writePendingConfig } from "../plugins/codex-loop/scripts/lib/pending.mjs";
-import { activateLoop, endLoop } from "../plugins/codex-loop/scripts/lib/loop-state.mjs";
+import {
+  activateLoop,
+  endLoop,
+  usageLimitRetryAt,
+} from "../plugins/codex-loop/scripts/lib/loop-state.mjs";
 import { readLoopState, writeLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
 import { handleStop } from "../plugins/codex-loop/scripts/stop-hook.mjs";
 import { runWake, threadAcceptsTurnStart } from "../plugins/codex-loop/scripts/wake-worker.mjs";
@@ -271,6 +275,13 @@ function terminalClient(loopId, completedTurn) {
     async interruptTurn() {},
   };
 }
+
+test("caps fallback usage-limit retries at six hours", () => {
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  assert.equal(usageLimitRetryAt(null, now, 7), now + 320 * 60_000);
+  assert.equal(usageLimitRetryAt(null, now, 8), now + 360 * 60_000);
+  assert.equal(usageLimitRetryAt(null, now, 9), now + 360 * 60_000);
+});
 
 test("retries an App Server loop after the reported usage-limit reset", async (context) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-limit-data-"));

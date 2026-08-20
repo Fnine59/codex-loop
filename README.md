@@ -151,7 +151,7 @@ created -> waiting -> running -> waiting
 - 条件满足、达到最大次数或到期：`completed`
 - 用户要求停止、当前续轮被中断或会话结束：`terminated`
 - App Server、Hook 或唤醒失败：`failed`
-- App Server 返回使用额度耗尽或 HTTP 429 限流：本轮不计数，保持 `waiting`，优先等到错误中给出的额度重置时间后重试；没有可解析时间时使用最长 1 小时的退避。
+- App Server 返回使用额度耗尽或 HTTP 429 限流：本轮不计数，保持 `waiting`，优先等到错误中给出的额度重置时间后重试；没有可解析时间时使用最长 6 小时的退避。
 
 兼容模式由同步 Stop Hook 等待；`Ctrl-C` 可终止等待。推荐模式下，`loopcodex` 函数为每个 TUI 创建独立 App Server，并在会话退出时清理。Loop 会保留一个休眠中的一次性 Node 唤醒进程；唤醒后它只监听自己启动的这一轮，正常完成交回 Stop Hook 或处理终态后退出。没有操作系统 Cron 或本项目自己的常驻 daemon。电脑、App Server 与当前会话必须保持运行。
 
@@ -315,7 +315,7 @@ created -> waiting -> running -> waiting
 - Condition met, maximum runs reached, or expiry: `completed`
 - Explicit stop, interrupted continuation, or session end: `terminated`
 - App Server, hook, or wake-up failure: `failed`
-- App Server usage limit or HTTP 429 throttling: the attempt is not counted, the loop remains `waiting`, and retries after the reported reset time when available; otherwise it uses backoff capped at one hour.
+- App Server usage limit or HTTP 429 throttling: the attempt is not counted, the loop remains `waiting`, and retries after the reported reset time when available; otherwise it uses backoff capped at six hours.
 
 Compatibility mode waits inside the synchronous Stop hook; `Ctrl-C` terminates that wait. In recommended mode, the `loopcodex` function creates one isolated App Server per TUI and cleans it up when the session exits. The loop keeps one sleeping, one-shot Node wake process; after waking, it observes only the turn it started and exits when normal completion returns control to the Stop hook or the terminal status is handled. There is no operating-system Cron job or persistent daemon owned by this project. The computer, App Server, and current session must remain running.
 
