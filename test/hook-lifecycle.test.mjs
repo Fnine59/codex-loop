@@ -216,6 +216,27 @@ test("terminates an active loop idempotently", async (context) => {
   assert.deepEqual(await handleStop(hookInput(createControlMarker("stop")), options), {});
 });
 
+test("atomically replaces a loop when stop and start markers share a response", async (context) => {
+  const { dataDir, options, pendingDir } = await fixture(context);
+  const oldConfig = startConfig({ immediate: true });
+  await handleStop(hookInput(await startMarker(oldConfig, pendingDir)), options);
+
+  const newConfig = startConfig({ id: "f6e5d4c3b2a1", immediate: true });
+  const replacement = [
+    createControlMarker("stop", oldConfig.id),
+    await startMarker(newConfig, pendingDir),
+  ].join("\n");
+  const output = await handleStop(hookInput(replacement), options);
+
+  assert.equal(output.decision, "block");
+  assert.match(output.reason, new RegExp(`Codex Loop ${newConfig.id}`));
+  assert.match(output.reason, /Run 1/);
+  const state = await readLoopState("session-1", dataDir);
+  assert.equal(state.id, newConfig.id);
+  assert.equal(state.status, "running");
+  assert.equal(state.runs, 0);
+});
+
 test("does nothing in conversations without an active loop", async (context) => {
   const { options } = await fixture(context);
   assert.deepEqual(await handleStop(hookInput("A normal answer."), options), {});

@@ -101,6 +101,8 @@ loopcodex --model gpt-5.6
 
 `CODEX_LOOP_APP_SERVER_SOCKET` 必须在启动 App Server **之前**导出。Stop Hook 由 App Server 创建；只把变量传给远程 TUI 会导致插件找不到 Socket，并回退到同步 Stop Hook。
 
+插件重装会替换 Codex 的版本化 cache。已经运行的 App Server 若仍持有旧 `PLUGIN_ROOT`，Hook 会自动解析同一插件 cache 中仍存在的新 runtime；若找不到替代 runtime，则会明确要求重启会话，不会静默跳过 Loop。Skill 和插件元数据仍需新会话才能刷新。
+
 启动 App Server 进程本身不代表异步模式已经生效。Loop 启动后应看到 `active through App Server`，其状态应满足 `backend: "app-server"`、`threadId` 非空且 `lastError: null`。
 
 App Server 接口目前仍属于 Codex 的实验性能力。如果当前 CLI 不支持它，继续使用普通 `codex` 即可，Loop 功能仍能工作，只是等待期间 TUI 会被占用。单次等待接近或超过 7 天的 Cron 计划必须使用 `loopcodex`，避免超过同步 Hook 的超时上限。
@@ -264,6 +266,8 @@ Some terminal tools can “close” a tab by detaching its UI while retaining th
 ### Verify App Server detection
 
 Export `CODEX_LOOP_APP_SERVER_SOCKET` **before** starting App Server. App Server spawns the Stop hook; passing the variable only to the remote TUI prevents the plugin from locating the socket and makes it fall back to the synchronous Stop hook.
+
+Reinstalling the plugin replaces Codex's versioned cache. If a running App Server still holds the old `PLUGIN_ROOT`, its hooks resolve a surviving runtime from the same plugin cache; if none exists, they explicitly require a session restart instead of silently skipping the Loop. Skills and plugin metadata still need a new session to refresh.
 
 An App Server process alone does not prove that asynchronous mode is active. After starting a loop, expect the `active through App Server` message and state with `backend: "app-server"`, a non-null `threadId`, and `lastError: null`.
 

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/goal-guard.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/goal-guard.mjs\"; else printf '{}\\n'; fi",
+            "command": "hook=\"${PLUGIN_ROOT}/scripts/goal-guard.mjs\"; if [ ! -f \"${hook}\" ] && [ -n \"${PLUGIN_ROOT}\" ]; then for candidate in \"${PLUGIN_ROOT%/*}\"/*/scripts/goal-guard.mjs; do [ -f \"${candidate}\" ] && hook=\"${candidate}\"; done; fi; if [ -f \"${hook}\" ]; then exec node \"${hook}\"; else printf '%s\\n' '{\"systemMessage\":\"Codex Loop goal guard is unavailable after a plugin update; restart this Codex session before creating a durable goal.\"}'; fi",
             "timeout": 3,
             "statusMessage": "Keeping Codex Loop and durable goals separate"
           }
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/session-end.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/session-end.mjs\"; fi",
+            "command": "hook=\"${PLUGIN_ROOT}/scripts/session-end.mjs\"; if [ ! -f \"${hook}\" ] && [ -n \"${PLUGIN_ROOT}\" ]; then for candidate in \"${PLUGIN_ROOT%/*}\"/*/scripts/session-end.mjs; do [ -f \"${candidate}\" ] && hook=\"${candidate}\"; done; fi; [ -f \"${hook}\" ] && exec node \"${hook}\"; exit 0",
             "timeout": 3
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\" ]; then exec node \"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"; else printf '{}\\n'; fi",
+            "command": "hook=\"${PLUGIN_ROOT}/scripts/stop-hook.mjs\"; if [ ! -f \"${hook}\" ] && [ -n \"${PLUGIN_ROOT}\" ]; then for candidate in \"${PLUGIN_ROOT%/*}\"/*/scripts/stop-hook.mjs; do [ -f \"${candidate}\" ] && hook=\"${candidate}\"; done; fi; if [ -f \"${hook}\" ]; then exec node \"${hook}\"; else printf '%s\\n' '{\"systemMessage\":\"Codex Loop runtime is unavailable after a plugin update; restart this Codex session before starting or continuing a Loop.\"}'; fi",
             "timeout": 604800,
             "statusMessage": "Codex Loop scheduling"
           }
