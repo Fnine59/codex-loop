@@ -11,7 +11,9 @@ import {
   endLoop,
   failLoop,
   beginRun,
+  clearRuntimeUnavailable,
   isUsageLimitError,
+  markRuntimeUnavailable,
   scheduleUsageLimitRetry,
 } from "./lib/loop-state.mjs";
 import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
@@ -19,6 +21,8 @@ import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 const MAX_SLEEP_CHUNK_MS = 60_000;
 const IDLE_POLL_MS = 1_000;
 const TURN_COMPLETION_POLL_MS = 5_000;
+const RUNTIME_RECOVERY_MIN_MS = 1_000;
+const RUNTIME_RECOVERY_MAX_MS = 60_000;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 
 export function threadAcceptsTurnStart(thread) {
@@ -62,6 +66,27 @@ async function failCurrentWake(sessionId, loopId, wakeToken, context, error) {
   );
   if (!state) return;
   await writeLoopState(failLoop(state, "app-server-error", error, context.clock()), context.dataDir);
+}
+
+function runtimeRecoveryDelay(attempts) {
+  return Math.min(RUNTIME_RECOVERY_MAX_MS, RUNTIME_RECOVERY_MIN_MS * (2 ** Math.min(attempts - 1, 10)));
+}
+
+async function setRuntimeUnavailable(sessionId, matchesOwner, context, error, attempts) {
+  const state = await readLoopState(sessionId, context.dataDir);
+  if (!matchesOwner(state)) return false;
+  const now = context.clock();
+  const retryAt = now + runtimeRecoveryDelay(attempts);
+  await writeLoopState(markRuntimeUnavailable(state, error, now, retryAt, attempts), context.dataDir);
+  return true;
+}
+
+async function setRuntimeAvailable(sessionId, matchesOwner, context) {
+  const state = await readLoopState(sessionId, context.dataDir);
+  if (!matchesOwner(state)) return false;
+  const available = clearRuntimeUnavailable(state);
+  if (available !== state) await writeLoopState(available, context.dataDir);
+  return true;
 }
 
 function matchesActiveTurn(state, loopId, turnId) {
@@ -117,25 +142,157 @@ async function failOwnedWork(sessionId, loopId, wakeToken, activeTurnId, context
   await writeLoopState(failLoop(state, "app-server-error", error, context.clock()), context.dataDir);
 }
 
-async function waitForStartedTurn(sessionId, loopId, threadId, turnId, client, context) {
-  let notificationError = null;
-  let notifiedTurn = null;
-  client.waitForTurnCompletion(threadId, turnId).then(
-    (turn) => { notifiedTurn = turn; },
-    (error) => { notificationError = error; },
-  );
+async function waitForStartedTurn(sessionId, loopId, threadId, turnId, initialClient, context) {
+  let client = initialClient;
+  let recoveryError = null;
+  let recoveryAttempts = 0;
+  let notification = null;
+  const watchCompletion = () => {
+    const result = { error: null, turn: null };
+    client.waitForTurnCompletion(threadId, turnId).then(
+      (turn) => { result.turn = turn; },
+      (error) => { result.error = error; },
+    );
+    return result;
+  };
+  notification = watchCompletion();
+  const matchesOwner = (state) => matchesActiveTurn(state, loopId, turnId);
 
   while (true) {
-    if (notificationError) throw notificationError;
-    if (notifiedTurn) return notifiedTurn;
-
     const state = await readLoopState(sessionId, context.dataDir);
-    if (!matchesActiveTurn(state, loopId, turnId)) return null;
-    const thread = await client.readThread(threadId, true);
-    if (!thread) throw new Error(`App Server thread is unavailable: ${threadId}.`);
-    const turn = thread.turns?.find((candidate) => candidate.id === turnId);
-    if (turn && TERMINAL_TURN_STATUSES.has(turn.status)) return turn;
-    await context.sleep(TURN_COMPLETION_POLL_MS);
+    if (!matchesOwner(state)) return { client, turn: null };
+    if (notification?.turn) {
+      await setRuntimeAvailable(sessionId, matchesOwner, context);
+      return { client, turn: notification.turn };
+    }
+    if (notification?.error) recoveryError = notification.error;
+
+    if (!recoveryError) {
+      await context.sleep(TURN_COMPLETION_POLL_MS);
+      continue;
+    }
+    if (!context.reconnectClient) throw recoveryError;
+
+    recoveryAttempts += 1;
+    if (!await setRuntimeUnavailable(
+      sessionId,
+      matchesOwner,
+      context,
+      recoveryError,
+      recoveryAttempts,
+    )) return { client, turn: null };
+    await context.sleep(runtimeRecoveryDelay(recoveryAttempts));
+    if (!matchesOwner(await readLoopState(sessionId, context.dataDir))) return { client, turn: null };
+
+    try {
+      client = await context.reconnectClient(client);
+      const thread = await client.resumeThread(threadId);
+      const turn = await client.readTurn(threadId, turnId);
+      if (turn && TERMINAL_TURN_STATUSES.has(turn.status)) {
+        await setRuntimeAvailable(sessionId, matchesOwner, context);
+        return { client, turn };
+      }
+      if (!turn || thread?.status?.type !== "active") {
+        throw new Error(`App Server turn could not be reconciled: ${turnId}.`);
+      }
+      await setRuntimeAvailable(sessionId, matchesOwner, context);
+      notification = watchCompletion();
+      recoveryError = null;
+      recoveryAttempts = 0;
+    } catch (error) {
+      recoveryError = error;
+      notification = null;
+    }
+  }
+}
+
+async function waitForStartableThread(sessionId, loopId, wakeToken, initialClient, context) {
+  let client = initialClient;
+  let recoveryError = null;
+  let recoveryAttempts = 0;
+  const matchesOwner = (state) => matchesWake(state, loopId, wakeToken, ["waiting"]);
+
+  while (true) {
+    const state = await readLoopState(sessionId, context.dataDir);
+    if (!matchesOwner(state)) return { client, state: null };
+    const ended = completionReason(state, context.clock());
+    if (ended) {
+      await writeLoopState(endLoop(state, "completed", ended, context.clock()), context.dataDir);
+      return { client, state: null };
+    }
+
+    if (recoveryError) {
+      if (!context.reconnectClient) throw recoveryError;
+      recoveryAttempts += 1;
+      if (!await setRuntimeUnavailable(
+        sessionId,
+        matchesOwner,
+        context,
+        recoveryError,
+        recoveryAttempts,
+      )) return { client, state: null };
+      await context.sleep(runtimeRecoveryDelay(recoveryAttempts));
+      if (!matchesOwner(await readLoopState(sessionId, context.dataDir))) return { client, state: null };
+      try {
+        client = await context.reconnectClient(client);
+        recoveryError = null;
+      } catch (error) {
+        recoveryError = error;
+        continue;
+      }
+    }
+
+    try {
+      const thread = await client.readThread(state.threadId, false);
+      if (!thread) throw new Error(`App Server thread is unavailable: ${state.threadId}.`);
+      if (["notLoaded", "systemError"].includes(thread.status?.type)) {
+        throw new Error(`App Server thread is ${thread.status.type}: ${state.threadId}.`);
+      }
+      await setRuntimeAvailable(sessionId, matchesOwner, context);
+      recoveryAttempts = 0;
+      if (threadAcceptsTurnStart(thread)) {
+        return { client, state: await readMatchingState(
+          sessionId,
+          loopId,
+          wakeToken,
+          context.dataDir,
+          ["waiting"],
+        ) };
+      }
+      await context.sleep(IDLE_POLL_MS);
+    } catch (error) {
+      recoveryError = error;
+    }
+  }
+}
+
+async function connectWakeClient(sessionId, loopId, wakeToken, context) {
+  let attempts = 0;
+  const matchesOwner = (state) => matchesWake(state, loopId, wakeToken, ["waiting"]);
+
+  while (true) {
+    const state = await readLoopState(sessionId, context.dataDir);
+    if (!matchesOwner(state)) return null;
+    const ended = completionReason(state, context.clock());
+    if (ended) {
+      await writeLoopState(endLoop(state, "completed", ended, context.clock()), context.dataDir);
+      return null;
+    }
+    try {
+      const client = await context.reconnectClient(null);
+      await setRuntimeAvailable(sessionId, matchesOwner, context);
+      return client;
+    } catch (error) {
+      attempts += 1;
+      if (!await setRuntimeUnavailable(
+        sessionId,
+        matchesOwner,
+        context,
+        error,
+        attempts,
+      )) return null;
+      await context.sleep(runtimeRecoveryDelay(attempts));
+    }
   }
 }
 
@@ -145,10 +302,27 @@ export async function runWake(sessionId, loopId, wakeToken, options = {}) {
     dataDir: options.dataDir ?? defaultDataDir(),
     scheduleWake: options.scheduleWake ?? spawnWakeWorker,
     sleep: options.sleep ?? delay,
+    reconnectClient: options.reconnectClient ?? null,
   };
   let client = options.client ?? null;
   let activeTurnId = null;
   const ownsClient = !client;
+  const ownedClients = new Set();
+
+  if (!context.reconnectClient && ownsClient) {
+    context.reconnectClient = async (previous) => {
+      previous?.close();
+      const next = new AppServerClient();
+      ownedClients.add(next);
+      try {
+        await next.connect();
+      } catch (error) {
+        next.close();
+        throw error;
+      }
+      return next;
+    };
+  }
 
   try {
     let state = await waitUntilDue(sessionId, loopId, wakeToken, context);
@@ -160,26 +334,18 @@ export async function runWake(sessionId, loopId, wakeToken, options = {}) {
     }
 
     if (!client) {
-      client = new AppServerClient();
-      await client.connect();
+      client = await connectWakeClient(sessionId, loopId, wakeToken, context);
+      if (!client) return false;
     }
-    while (true) {
-      state = await readMatchingState(sessionId, loopId, wakeToken, context.dataDir, ["waiting"]);
-      if (!state) return false;
-      const now = context.clock();
-      const ended = completionReason(state, now);
-      if (ended) {
-        await writeLoopState(endLoop(state, "completed", ended, now), context.dataDir);
-        return false;
-      }
-      const thread = await client.readThread(state.threadId, false);
-      if (!thread) throw new Error(`App Server thread is unavailable: ${state.threadId}.`);
-      if (["notLoaded", "systemError"].includes(thread.status?.type)) {
-        throw new Error(`App Server thread is ${thread.status.type}: ${state.threadId}.`);
-      }
-      if (threadAcceptsTurnStart(thread)) break;
-      await context.sleep(IDLE_POLL_MS);
-    }
+    const startable = await waitForStartableThread(
+      sessionId,
+      loopId,
+      wakeToken,
+      client,
+      context,
+    );
+    client = startable.client;
+    if (!startable.state) return false;
 
     state = await readMatchingState(sessionId, loopId, wakeToken, context.dataDir, ["waiting"]);
     if (!state) return false;
@@ -201,7 +367,7 @@ export async function runWake(sessionId, loopId, wakeToken, options = {}) {
     }
     await writeLoopState(beginRun(latest, context.clock(), { activeTurnId: turn.id }), context.dataDir);
     activeTurnId = turn.id;
-    const completedTurn = await waitForStartedTurn(
+    const completion = await waitForStartedTurn(
       sessionId,
       loopId,
       state.threadId,
@@ -209,13 +375,16 @@ export async function runWake(sessionId, loopId, wakeToken, options = {}) {
       client,
       context,
     );
-    if (!completedTurn) return false;
-    return await handleTurnCompletion(sessionId, loopId, completedTurn, context);
+    client = completion.client;
+    if (!completion.turn) return false;
+    return await handleTurnCompletion(sessionId, loopId, completion.turn, context);
   } catch (error) {
     await failOwnedWork(sessionId, loopId, wakeToken, activeTurnId, context, error);
     return false;
   } finally {
-    if (ownsClient) client?.close();
+    if (ownsClient) {
+      for (const ownedClient of ownedClients) ownedClient.close();
+    }
   }
 }
 

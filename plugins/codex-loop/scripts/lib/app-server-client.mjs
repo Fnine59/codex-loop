@@ -338,6 +338,40 @@ export class AppServerClient {
     return result?.thread ?? null;
   }
 
+  async resumeThread(threadId) {
+    try {
+      const result = await this.request("thread/resume", { threadId, excludeTurns: true });
+      return result?.thread ?? null;
+    } catch (error) {
+      if (![-32601, -32602].includes(Number(error?.code))) throw error;
+      const result = await this.request("thread/resume", { threadId });
+      return result?.thread ?? null;
+    }
+  }
+
+  async readTurn(threadId, turnId) {
+    let cursor = null;
+    try {
+      do {
+        const page = await this.request("thread/turns/list", {
+          threadId,
+          cursor,
+          limit: 100,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        });
+        const turn = page?.data?.find((candidate) => candidate.id === turnId);
+        if (turn) return turn;
+        cursor = page?.nextCursor ?? null;
+      } while (cursor);
+      return null;
+    } catch (error) {
+      if (![-32601, -32602].includes(Number(error?.code))) throw error;
+      const thread = await this.readThread(threadId, true);
+      return thread?.turns?.find((candidate) => candidate.id === turnId) ?? null;
+    }
+  }
+
   async startTurn(threadId, prompt, cwd = null) {
     const params = {
       threadId,

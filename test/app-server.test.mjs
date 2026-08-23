@@ -295,11 +295,7 @@ test("retries an App Server loop after the reported usage-limit reset", async (c
     message: "You've hit your usage limit. Please try again at Aug 20th, 2026 11:42 AM.",
     codexErrorInfo: "usageLimitExceeded",
   };
-  const client = terminalClient(loopId, null);
-  client.waitForTurnCompletion = () => new Promise(() => {});
-  client.readThread = async (_threadId, includeTurns) => includeTurns
-    ? { turns: [{ id: `turn-${loopId}`, status: "failed", error }] }
-    : { status: { type: "idle" }, canAcceptDirectInput: true };
+  const client = terminalClient(loopId, { id: `turn-${loopId}`, status: "failed", error });
 
   assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
     client,
@@ -320,6 +316,70 @@ test("retries an App Server loop after the reported usage-limit reset", async (c
   assert.notEqual(state.wakeToken, initial.wakeToken);
   assert.equal(scheduled.length, 1);
   assert.equal(scheduled[0].wakeToken, state.wakeToken);
+});
+
+test("recovers a monitored turn after an App Server observation timeout", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-recovery-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = Date.parse("2026-08-17T08:00:00+08:00");
+  const loopId = "recovery-loop";
+  const sessionId = "recovery-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  let starts = 0;
+  const recoveringStatuses = new Set();
+  const unavailableClient = {
+    async readThread() {
+      throw new Error("App Server request timed out: thread/read.");
+    },
+  };
+  const timedOutClient = terminalClient(loopId, null);
+  timedOutClient.startTurn = async () => {
+    starts += 1;
+    return { id: `turn-${loopId}` };
+  };
+  timedOutClient.waitForTurnCompletion = async () => {
+    throw new Error("App Server request timed out: thread/read.");
+  };
+  const recoveredClient = {
+    async resumeThread() {
+      return { status: { type: "idle" } };
+    },
+    async readTurn() {
+      return { id: `turn-${loopId}`, status: "completed" };
+    },
+    async waitForTurnCompletion() {
+      return new Promise(() => {});
+    },
+    close() {},
+  };
+  let reconnects = 0;
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client: unavailableClient,
+    clock: () => now,
+    dataDir,
+    reconnectClient: async () => {
+      reconnects += 1;
+      return reconnects === 1 ? timedOutClient : recoveredClient;
+    },
+    sleep: async () => {
+      const state = await readLoopState(sessionId, dataDir);
+      if (state.runtimeStatus === "recovering") {
+        recoveringStatuses.add(state.status);
+        if (state.status === "running") assert.equal(state.activeTurnId, `turn-${loopId}`);
+      }
+    },
+  }), true);
+
+  const state = await readLoopState(sessionId, dataDir);
+  assert.deepEqual([...recoveringStatuses].sort(), ["running", "waiting"]);
+  assert.equal(reconnects, 2);
+  assert.equal(starts, 1);
+  assert.equal(state.status, "running");
+  assert.equal(state.activeTurnId, `turn-${loopId}`);
+  assert.equal(state.runtimeStatus, null);
+  assert.equal(state.runtimeLastError, null);
+  assert.equal(state.endReason, null);
 });
 
 test("retries an App Server loop after a structured HTTP 429 error", async (context) => {

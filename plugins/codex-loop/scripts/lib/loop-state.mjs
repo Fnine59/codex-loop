@@ -100,6 +100,11 @@ export function activateLoop(config, input, now, runtime = { backend: "stop-hook
     lastErrorCode: null,
     usageLimitRetries: 0,
     lastLimitedAt: null,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
@@ -113,6 +118,11 @@ export function endLoop(state, status, reason, now, extra = {}) {
     nextRunAt: null,
     wakeToken: null,
     activeTurnId: null,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
@@ -126,6 +136,30 @@ export function completionReason(state, now) {
   if (state.maxRuns !== null && state.runs >= state.maxRuns) return "max-runs";
   if (state.expiresAt !== null && now >= state.expiresAt) return "expired";
   return null;
+}
+
+export function markRuntimeUnavailable(state, error, now, retryAt, attempts) {
+  return {
+    ...state,
+    runtimeStatus: "recovering",
+    runtimeLastError: errorMessage(error),
+    runtimeUnavailableAt: state.runtimeUnavailableAt ?? now,
+    runtimeRetryAt: retryAt,
+    runtimeRecoveryAttempts: attempts,
+  };
+}
+
+export function clearRuntimeUnavailable(state) {
+  if (!state.runtimeStatus && !state.runtimeLastError && !state.runtimeUnavailableAt &&
+      !state.runtimeRetryAt && !state.runtimeRecoveryAttempts) return state;
+  return {
+    ...state,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
+  };
 }
 
 export function beginRun(state, now, { activeTurnId = null } = {}) {
@@ -143,6 +177,11 @@ export function beginRun(state, now, { activeTurnId = null } = {}) {
     lastStartedAt: now,
     lastError: null,
     lastErrorCode: null,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
@@ -155,6 +194,11 @@ export function recordRunCompletion(state, message, now) {
     lastError: null,
     lastErrorCode: null,
     usageLimitRetries: 0,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
@@ -175,6 +219,11 @@ export function scheduleUsageLimitRetry(state, error, now) {
     lastErrorCode: "usageLimitExceeded",
     usageLimitRetries,
     lastLimitedAt: now,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
@@ -209,6 +258,11 @@ export function scheduleNextRun(state, message, now) {
     cronCursorAt,
     lastDelayMs: Math.max(0, nextRunAt - now),
     lastDelaySource,
+    runtimeStatus: null,
+    runtimeLastError: null,
+    runtimeUnavailableAt: null,
+    runtimeRetryAt: null,
+    runtimeRecoveryAttempts: 0,
   };
 }
 
