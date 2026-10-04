@@ -26,6 +26,20 @@ function normalizedErrorCode(error) {
   return typeof code === "string" ? code.replace(/[^a-z]/gi, "").toLowerCase() : "";
 }
 
+function transientServiceErrorCode(error) {
+  const code = normalizedErrorCode(error);
+  if (code === "serveroverloaded") return "serverOverloaded";
+  if (code === "serviceunavailable") return "serviceUnavailable";
+  const message = errorMessage(error);
+  if (/\b503(?:\s+Service Unavailable)?\b/i.test(message) || /\bservice unavailable\b/i.test(message)) {
+    return "serviceUnavailable";
+  }
+  if (/\bserver overloaded\b/i.test(message) || /\bmodel is at capacity\b/i.test(message)) {
+    return "serverOverloaded";
+  }
+  return null;
+}
+
 function isTooManyRequestsError(error) {
   const info = error?.codexErrorInfo ?? error?.codex_error_info;
   const details = info?.responseTooManyFailedAttempts ?? info?.response_too_many_failed_attempts;
@@ -37,6 +51,10 @@ export function isUsageLimitError(error) {
   return normalizedErrorCode(error) === "usagelimitexceeded" ||
     /\busage limit\b/i.test(errorMessage(error)) ||
     isTooManyRequestsError(error);
+}
+
+export function isTransientServiceError(error) {
+  return transientServiceErrorCode(error) !== null;
 }
 
 function reportedUsageLimitRetryAt(error, now) {
@@ -224,6 +242,14 @@ export function scheduleUsageLimitRetry(state, error, now) {
     runtimeUnavailableAt: null,
     runtimeRetryAt: null,
     runtimeRecoveryAttempts: 0,
+  };
+}
+
+export function scheduleTransientServiceRetry(state, error, now) {
+  return {
+    ...scheduleNextRun(state, "", now),
+    lastError: errorMessage(error),
+    lastErrorCode: transientServiceErrorCode(error) ?? "serviceUnavailable",
   };
 }
 

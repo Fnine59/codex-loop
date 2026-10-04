@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { AppServerClient } from "./lib/app-server-client.mjs";
+import { nextCronTime } from "./lib/cron.mjs";
 import {
   completionReason,
   continuationPrompt,
@@ -13,14 +14,18 @@ import {
   beginRun,
   clearRuntimeUnavailable,
   isUsageLimitError,
+  isTransientServiceError,
   markRuntimeUnavailable,
+  scheduleTransientServiceRetry,
   scheduleUsageLimitRetry,
 } from "./lib/loop-state.mjs";
 import { defaultDataDir, readLoopState, writeLoopState } from "./lib/state.mjs";
 
 const MAX_SLEEP_CHUNK_MS = 60_000;
-const IDLE_POLL_MS = 1_000;
-const TURN_COMPLETION_POLL_MS = 5_000;
+const THREAD_START_RETRY_MS = 60_000;
+const TURN_MONITOR_STATE_CHECK_MS = 60_000;
+const DEFAULT_TURN_RECONCILIATION_MS = 24 * 60 * 60 * 1_000;
+const MIN_TURN_RECONCILIATION_MS = 60_000;
 const RUNTIME_RECOVERY_MIN_MS = 1_000;
 const RUNTIME_RECOVERY_MAX_MS = 60_000;
 const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
@@ -28,6 +33,17 @@ const TERMINAL_TURN_STATUSES = new Set(["completed", "failed", "interrupted"]);
 export function threadAcceptsTurnStart(thread) {
   if (thread?.canAcceptDirectInput === true) return true;
   return thread?.canAcceptDirectInput == null && thread?.status?.type === "idle";
+}
+
+export function nextTurnReconciliationAt(state, afterMs) {
+  if (!Number.isFinite(afterMs)) throw new Error("Turn reconciliation baseline must be finite.");
+  if (state?.scheduleMode === "cron" && state.cronExpression) {
+    return nextCronTime(state.cronExpression, afterMs);
+  }
+  if (state?.scheduleMode === "fixed" && Number.isFinite(state.intervalMs)) {
+    return afterMs + Math.max(MIN_TURN_RECONCILIATION_MS, state.intervalMs);
+  }
+  return afterMs + DEFAULT_TURN_RECONCILIATION_MS;
 }
 
 function delay(milliseconds) {
@@ -111,8 +127,29 @@ async function handleTurnCompletion(sessionId, loopId, turn, context) {
     return false;
   }
   if (!isUsageLimitError(turn.error)) {
-    await writeLoopState(failLoop(state, "turn-failed", turn.error ?? "App Server turn failed.", now), context.dataDir);
-    return false;
+    if (!isTransientServiceError(turn.error)) {
+      await writeLoopState(failLoop(state, "turn-failed", turn.error ?? "App Server turn failed.", now), context.dataDir);
+      return false;
+    }
+
+    const wakeToken = randomUUID();
+    const retryState = { ...scheduleTransientServiceRetry(state, turn.error, now), wakeToken };
+    await writeLoopState(retryState, context.dataDir);
+    try {
+      await context.scheduleWake({
+        sessionId,
+        loopId,
+        wakeToken,
+        dataDir: context.dataDir,
+      });
+      return true;
+    } catch (error) {
+      const latest = await readMatchingState(sessionId, loopId, wakeToken, context.dataDir, ["waiting"]);
+      if (latest) {
+        await writeLoopState(failLoop(latest, "wake-worker-error", error, context.clock()), context.dataDir);
+      }
+      return false;
+    }
   }
 
   const wakeToken = randomUUID();
@@ -147,6 +184,7 @@ async function waitForStartedTurn(sessionId, loopId, threadId, turnId, initialCl
   let recoveryError = null;
   let recoveryAttempts = 0;
   let notification = null;
+  let reconciliationAt = null;
   const watchCompletion = () => {
     const result = { error: null, turn: null };
     client.waitForTurnCompletion(threadId, turnId).then(
@@ -161,48 +199,75 @@ async function waitForStartedTurn(sessionId, loopId, threadId, turnId, initialCl
   while (true) {
     const state = await readLoopState(sessionId, context.dataDir);
     if (!matchesOwner(state)) return { client, turn: null };
+    if (reconciliationAt === null) {
+      reconciliationAt = nextTurnReconciliationAt(
+        state,
+        state.lastStartedAt ?? context.clock(),
+      );
+    }
     if (notification?.turn) {
       await setRuntimeAvailable(sessionId, matchesOwner, context);
       return { client, turn: notification.turn };
     }
     if (notification?.error) recoveryError = notification.error;
 
-    if (!recoveryError) {
-      await context.sleep(TURN_COMPLETION_POLL_MS);
+    if (recoveryError) {
+      if (!context.reconnectClient) throw recoveryError;
+
+      recoveryAttempts += 1;
+      if (!await setRuntimeUnavailable(
+        sessionId,
+        matchesOwner,
+        context,
+        recoveryError,
+        recoveryAttempts,
+      )) return { client, turn: null };
+      await context.sleep(runtimeRecoveryDelay(recoveryAttempts));
+      if (!matchesOwner(await readLoopState(sessionId, context.dataDir))) return { client, turn: null };
+
+      try {
+        client = await context.reconnectClient(client);
+        const turn = await client.readTurn(threadId, turnId);
+        if (turn && TERMINAL_TURN_STATUSES.has(turn.status)) {
+          await setRuntimeAvailable(sessionId, matchesOwner, context);
+          return { client, turn };
+        }
+        if (!turn || turn.status !== "inProgress") {
+          throw new Error(`App Server turn could not be reconciled: ${turnId}.`);
+        }
+        await setRuntimeAvailable(sessionId, matchesOwner, context);
+        notification = watchCompletion();
+        reconciliationAt = nextTurnReconciliationAt(state, context.clock());
+        recoveryError = null;
+        recoveryAttempts = 0;
+      } catch (error) {
+        recoveryError = error;
+        notification = null;
+      }
       continue;
     }
-    if (!context.reconnectClient) throw recoveryError;
 
-    recoveryAttempts += 1;
-    if (!await setRuntimeUnavailable(
-      sessionId,
-      matchesOwner,
-      context,
-      recoveryError,
-      recoveryAttempts,
-    )) return { client, turn: null };
-    await context.sleep(runtimeRecoveryDelay(recoveryAttempts));
-    if (!matchesOwner(await readLoopState(sessionId, context.dataDir))) return { client, turn: null };
-
-    try {
-      client = await context.reconnectClient(client);
-      const thread = await client.resumeThread(threadId);
-      const turn = await client.readTurn(threadId, turnId);
-      if (turn && TERMINAL_TURN_STATUSES.has(turn.status)) {
+    const now = context.clock();
+    if (now >= reconciliationAt) {
+      try {
+        const turn = await client.readTurn(threadId, turnId);
+        if (turn && TERMINAL_TURN_STATUSES.has(turn.status)) {
+          await setRuntimeAvailable(sessionId, matchesOwner, context);
+          return { client, turn };
+        }
+        if (!turn || turn.status !== "inProgress") {
+          throw new Error(`App Server turn could not be reconciled: ${turnId}.`);
+        }
         await setRuntimeAvailable(sessionId, matchesOwner, context);
-        return { client, turn };
+        reconciliationAt = nextTurnReconciliationAt(state, now);
+      } catch (error) {
+        recoveryError = error;
+        notification = null;
       }
-      if (!turn || thread?.status?.type !== "active") {
-        throw new Error(`App Server turn could not be reconciled: ${turnId}.`);
-      }
-      await setRuntimeAvailable(sessionId, matchesOwner, context);
-      notification = watchCompletion();
-      recoveryError = null;
-      recoveryAttempts = 0;
-    } catch (error) {
-      recoveryError = error;
-      notification = null;
+      continue;
     }
+
+    await context.sleep(Math.min(TURN_MONITOR_STATE_CHECK_MS, reconciliationAt - now));
   }
 }
 
@@ -259,7 +324,7 @@ async function waitForStartableThread(sessionId, loopId, wakeToken, initialClien
           ["waiting"],
         ) };
       }
-      await context.sleep(IDLE_POLL_MS);
+      await context.sleep(THREAD_START_RETRY_MS);
     } catch (error) {
       recoveryError = error;
     }

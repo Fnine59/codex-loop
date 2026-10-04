@@ -14,11 +14,16 @@ import { writePendingConfig } from "../plugins/codex-loop/scripts/lib/pending.mj
 import {
   activateLoop,
   endLoop,
+  isTransientServiceError,
   usageLimitRetryAt,
 } from "../plugins/codex-loop/scripts/lib/loop-state.mjs";
 import { readLoopState, writeLoopState } from "../plugins/codex-loop/scripts/lib/state.mjs";
 import { handleStop } from "../plugins/codex-loop/scripts/stop-hook.mjs";
-import { runWake, threadAcceptsTurnStart } from "../plugins/codex-loop/scripts/wake-worker.mjs";
+import {
+  nextTurnReconciliationAt,
+  runWake,
+  threadAcceptsTurnStart,
+} from "../plugins/codex-loop/scripts/wake-worker.mjs";
 
 function hookInput(message, turnId = "turn-start") {
   return {
@@ -127,6 +132,55 @@ test("speaks App Server requests over an injected transport", async () => {
   assert.equal((await client.waitForTurnCompletion("thread-1", "loop-turn-1")).status, "completed");
   assert.deepEqual(await client.cleanBackgroundTerminals("thread-1"), {});
   client.close();
+});
+
+test("reads persisted turn status without resuming the thread", async () => {
+  const requests = [];
+  const transport = {
+    async connect() {},
+    send(source) {
+      const message = JSON.parse(source);
+      if (message.id === undefined) return;
+      requests.push(message);
+      const result = message.method === "initialize"
+        ? { serverInfo: { name: "fake", version: "1" } }
+        : { data: [{ id: "turn-1", status: "failed", items: [] }], nextCursor: null };
+      queueMicrotask(() => this.onMessage(JSON.stringify({ id: message.id, result })));
+    },
+    close() {},
+  };
+  const client = new AppServerClient({ transport, requestTimeoutMs: 1_000 });
+  await client.connect();
+
+  assert.equal((await client.readTurn("thread-1", "turn-1")).status, "failed");
+  assert.deepEqual(requests.map((request) => request.method), ["initialize", "thread/turns/list"]);
+  assert.deepEqual(requests[1].params, {
+    threadId: "thread-1",
+    cursor: null,
+    limit: 100,
+    sortDirection: "desc",
+    itemsView: "notLoaded",
+  });
+  client.close();
+});
+
+test("reconciles turns at the next schedule point", () => {
+  const after = new Date(2026, 7, 31, 14, 20, 21).getTime();
+  assert.equal(nextTurnReconciliationAt({
+    scheduleMode: "cron",
+    cronExpression: "15 * * * *",
+  }, after), new Date(2026, 7, 31, 15, 15).getTime());
+  assert.equal(nextTurnReconciliationAt({
+    scheduleMode: "fixed",
+    intervalMs: 5 * 60_000,
+  }, after), after + 5 * 60_000);
+  assert.equal(nextTurnReconciliationAt({ scheduleMode: "dynamic" }, after), after + 24 * 60 * 60_000);
+});
+
+test("treats capacity and HTTP 503 failures as transient", () => {
+  assert.equal(isTransientServiceError({ codexErrorInfo: "serverOverloaded" }), true);
+  assert.equal(isTransientServiceError({ message: "request failed: 503 Service Unavailable" }), true);
+  assert.equal(isTransientServiceError({ message: "Model provider returned an invalid response." }), false);
 });
 
 test("matches the current App Server thread by turn instead of another loaded session", async () => {
@@ -261,6 +315,46 @@ async function writeWakeState(dataDir, sessionId, loopId, now) {
   return armed;
 }
 
+test("checks a busy thread no more than once per minute", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-busy-thread-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const now = new Date(2026, 7, 31, 14, 20, 21).getTime();
+  const loopId = "busy-thread-loop";
+  const sessionId = "busy-thread-session";
+  const initial = await writeWakeState(dataDir, sessionId, loopId, now);
+  let reads = 0;
+  let started = false;
+  const preStartSleeps = [];
+  const client = {
+    async readThread() {
+      reads += 1;
+      return reads === 1
+        ? { status: { type: "active", activeFlags: [] }, canAcceptDirectInput: false }
+        : { status: { type: "idle" }, canAcceptDirectInput: true };
+    },
+    async startTurn() {
+      started = true;
+      return { id: `turn-${loopId}` };
+    },
+    async waitForTurnCompletion() {
+      return { id: `turn-${loopId}`, status: "completed" };
+    },
+    async interruptTurn() {},
+  };
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client,
+    clock: () => now,
+    dataDir,
+    sleep: async (milliseconds) => {
+      if (!started) preStartSleeps.push(milliseconds);
+    },
+  }), true);
+
+  assert.equal(reads, 2);
+  assert.deepEqual(preStartSleeps, [60_000]);
+});
+
 function terminalClient(loopId, completedTurn) {
   return {
     async readThread() {
@@ -342,7 +436,7 @@ test("recovers a monitored turn after an App Server observation timeout", async 
   };
   const recoveredClient = {
     async resumeThread() {
-      return { status: { type: "idle" } };
+      assert.fail("turn reconciliation must not resume the thread");
     },
     async readTurn() {
       return { id: `turn-${loopId}`, status: "completed" };
@@ -380,6 +474,74 @@ test("recovers a monitored turn after an App Server observation timeout", async 
   assert.equal(state.runtimeStatus, null);
   assert.equal(state.runtimeLastError, null);
   assert.equal(state.endReason, null);
+});
+
+test("reconciles a missed capacity failure at the next Cron tick", async (context) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-loop-cron-reconcile-data-"));
+  context.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  let currentTime = new Date(2026, 7, 31, 14, 20, 21).getTime();
+  const loopId = "cron-reconcile-loop";
+  const sessionId = "cron-reconcile-session";
+  const initialState = activateLoop({
+    id: loopId,
+    task: "check Chrome conclusions",
+    until: null,
+    intervalMs: null,
+    cronExpression: "15 * * * *",
+    cadenceLabel: "every hour at :15",
+    ttlMs: null,
+    maxRuns: null,
+    immediate: true,
+  }, {
+    session_id: sessionId,
+    cwd: "/tmp/project",
+  }, currentTime, {
+    backend: "app-server",
+    threadId: `thread-${loopId}`,
+  });
+  const initial = { ...initialState, wakeToken: `wake-${loopId}` };
+  await writeLoopState(initial, dataDir);
+
+  let turnReads = 0;
+  const client = terminalClient(loopId, null);
+  client.waitForTurnCompletion = () => new Promise(() => {});
+  client.readTurn = async () => {
+    turnReads += 1;
+    return {
+      id: `turn-${loopId}`,
+      status: "failed",
+      error: {
+        message: "Selected model is at capacity. Please try a different model.",
+        codexErrorInfo: "serverOverloaded",
+      },
+    };
+  };
+  client.resumeThread = async () => assert.fail("turn reconciliation must not resume the thread");
+  const scheduled = [];
+
+  assert.equal(await runWake(sessionId, loopId, initial.wakeToken, {
+    client,
+    clock: () => currentTime,
+    dataDir,
+    scheduleWake: async (wake) => scheduled.push(wake),
+    sleep: async (milliseconds) => {
+      assert.equal(turnReads, 0);
+      currentTime += milliseconds;
+    },
+  }), true);
+
+  assert.equal(currentTime, new Date(2026, 7, 31, 15, 15).getTime());
+  assert.equal(turnReads, 1);
+  const state = await readLoopState(sessionId, dataDir);
+  assert.equal(state.status, "waiting");
+  assert.equal(state.runs, 0);
+  assert.equal(state.activeTurnId, null);
+  assert.equal(state.nextRunAt, currentTime);
+  assert.equal(state.lastDelaySource, "cron-queued");
+  assert.equal(state.lastErrorCode, "serverOverloaded");
+  assert.match(state.lastError, /at capacity/);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].wakeToken, state.wakeToken);
 });
 
 test("retries an App Server loop after a structured HTTP 429 error", async (context) => {

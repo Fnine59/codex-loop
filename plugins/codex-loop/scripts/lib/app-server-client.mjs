@@ -338,17 +338,6 @@ export class AppServerClient {
     return result?.thread ?? null;
   }
 
-  async resumeThread(threadId) {
-    try {
-      const result = await this.request("thread/resume", { threadId, excludeTurns: true });
-      return result?.thread ?? null;
-    } catch (error) {
-      if (![-32601, -32602].includes(Number(error?.code))) throw error;
-      const result = await this.request("thread/resume", { threadId });
-      return result?.thread ?? null;
-    }
-  }
-
   async readTurn(threadId, turnId) {
     let cursor = null;
     try {
@@ -460,8 +449,7 @@ export async function detectAppServerRuntime(input, options = {}) {
 export async function readAppServerTurnStatus(threadId, turnId, options = {}) {
   try {
     return await withAppServerClient(async (client) => {
-      const thread = await client.readThread(threadId, true);
-      return thread?.turns?.find((turn) => turn.id === turnId)?.status ?? null;
+      return (await client.readTurn(threadId, turnId))?.status ?? null;
     }, options);
   } catch {
     return null;
