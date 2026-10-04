@@ -1,0 +1,48 @@
+id = "fnine.codex-loop"
+name = "Codex Loop"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Read-only Loop overview and one-shot project launch presets."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "overview"
+title = "Loop 总览 / Overview"
+contexts = ["workspace"]
+command = ["node", "src/index.mjs", "open-overview"]
+
+[[actions]]
+id = "launch"
+title = "Loop 启动预设 / Launch presets"
+contexts = ["workspace"]
+command = ["node", "src/index.mjs", "open-launcher"]
+
+[[actions]]
+id = "settings"
+title = "Loop 全局设置 / Settings"
+contexts = ["workspace"]
+command = ["node", "src/index.mjs", "open-settings"]
+
+[[panes]]
+id = "overview"
+title = "Loop Overview"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["node", "src/index.mjs", "overview"]
+
+[[panes]]
+id = "launcher"
+title = "Loop Launch Presets"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["node", "src/index.mjs", "launcher"]
+
+[[panes]]
+id = "settings"
+title = "Loop Settings"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["node", "src/index.mjs", "settings"]
