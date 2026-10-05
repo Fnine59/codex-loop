@@ -2,40 +2,14 @@ import { randomUUID } from "node:crypto";
 import { discoverDataDirs, scanLoops } from "../overview/discovery.mjs";
 import { makeOverview, filterLoops, focusLoop } from "../overview/model.mjs";
 import { prepareLaunch, launchOnce, resumeLaunch, focusReceipt, RESUMABLE_STAGES } from "../launcher/launch.mjs";
-import { isCancel } from "./terminal.mjs";
-
-const when = value => Number.isFinite(value) ? new Date(value).toLocaleString() : "—";
-const location = loop => loop.association.linked
-  ? `${loop.association.workspace?.label || loop.association.pane.workspace_id} / ${loop.association.tab?.label || loop.association.pane.tab_id}`
-  : loop.association.reason === "ambiguous" ? "未关联（匹配不唯一）" : "未关联";
-const statusNames = { waiting: "等待", launching: "启动中", running: "执行中", completed: "已完成", stopped: "已停止", failed: "失败", expired: "已过期" };
+import { isCancel, span } from "./terminal.mjs";
+import { when, location, loopDetails, overviewHeader, overviewTable } from "./presentation.mjs";
 
 export async function loadOverview(config, client) {
   const roots = await discoverDataDirs(config);
   const [scan, snapshot] = await Promise.allSettled([scanLoops(roots), client.snapshot()]);
   if (scan.status === "rejected") throw scan.reason;
   return makeOverview(scan.value, snapshot.status === "fulfilled" ? snapshot.value : null, snapshot.status === "rejected" ? snapshot.reason.message : null);
-}
-
-function loopDetails(loop) {
-  return [
-    `Loop ${loop.id} · 记录状态：${statusNames[loop.status] || loop.status} · ${loop.runs} 轮`,
-    `位置：${location(loop)}`,
-    `Herdr Agent：${loop.association.pane?.agent_status || "不可确认"}；不是 Loop 心跳`,
-    `项目：${loop.cwd || "—"}`,
-    `会话 ID：${loop.sessionId}`,
-    `Thread ID：${loop.threadId || "—"}`,
-    `下次：${when(loop.nextRunAt)} · 到期：${when(loop.expiresAt)}`,
-    `创建：${when(loop.createdAt)} · 最近文件更新：${when(loop.updatedAt)}`,
-    `执行方式：${loop.backend || "—"} · 节奏：${loop.cadenceLabel || loop.cronExpression || loop.scheduleMode || "—"}`,
-    `运行时记录：${loop.runtimeStatus || "—"} · 重试：${when(loop.runtimeRetryAt)}`,
-    `最后错误：${loop.lastError || loop.runtimeLastError || "—"}`,
-    `结束原因：${loop.endReason || "—"}`,
-    "", "任务：", ...String(loop.task).split("\n"),
-    "", "完成条件：", ...String(loop.until || "—").split("\n"),
-    "", `只读来源：${loop.source}`,
-    "状态文件不含心跳，不能据此保证 Loop 进程仍在运行。",
-  ];
 }
 
 export class App {
@@ -57,18 +31,14 @@ export class App {
       for (;;) {
         const loops = filterLoops(overview, { scope, query, workspaceId: this.context.workspaceId });
         selected = Math.max(0, Math.min(selected, loops.length - 1));
-        const start = Math.max(0, selected - this.terminal.capacity + 4);
-        const counts = overview.counts;
-        const header = [
-          `记录中活跃 ${counts.active} · 总记录 ${counts.total} · 已关联 ${counts.linked} · 未关联 ${counts.unlinked}`,
-          `视图：${scope} · 搜索：${query || "—"} · 状态来自记录，运行存活未确认`,
-          overview.snapshotError ? `Herdr 不可用：${overview.snapshotError}` : `${overview.warnings.length} 条读取警告 · 已结束 ${counts.ended} 条（a 显示）`,
-          "",
-        ];
-        const body = loops.slice(start, start + this.terminal.capacity - 4).map((loop, index) =>
-          `${start + index === selected ? "›" : " "} ${loop.id.slice(0, 8)}  ${statusNames[loop.status] || loop.status}  ${loop.runs}轮  ${location(loop)}  ${loop.task}`);
-        this.terminal.render("Loop 总览 / Overview", [...header, ...(body.length ? body : ["没有符合条件的记录。n 打开启动预设，s 配置数据目录。"]), "", loops[selected] ? `下次：${when(loops[selected].nextRunAt)} · 项目：${loops[selected].cwd || "—"}` : ""],
-          "↑↓ Enter跳转 d详情 /搜索 a全部 u未关联 w空间 n预设 s设置 ?来源 Esc退出", body.length ? header.length + selected - start : -1);
+        const header = [...overviewHeader(overview, { scope, query }), ""];
+        const limit = Math.max(1, this.terminal.capacity - header.length - 1);
+        const start = Math.max(0, selected - limit + 1);
+        const table = overviewTable(loops.slice(start, start + limit), this.terminal.width, selected - start);
+        this.terminal.render("Loop 总览 / Overview", [...header, table.header,
+          ...(table.rows.length ? table.rows : ["没有符合条件的记录。n 打开启动预设，s 配置数据目录。"]), "",
+          loops[selected] ? span(`会话：${location(loops[selected])} · 下次：${when(loops[selected].nextRunAt)}`, { dim: true }) : ""],
+          "↑↓ Enter跳转 d详情 /搜索 a全部 u未关联 w空间 n预设 s设置 ?来源 Esc退出", table.rows.length ? header.length + 1 + selected - start : -1);
         const key = await this.terminal.key(Math.max(1, refreshAt - Date.now()));
         if (!key) break;
         if (isCancel(key)) return;
@@ -90,7 +60,7 @@ export class App {
         else if ((key.str === "d" || key.name === "return") && loops[selected]) {
           const loop = loops[selected];
           if (key.str === "d") {
-            const action = await this.terminal.view("Loop 详情 / Details", loopDetails(loop), { actions: ["return"], footer: "↑↓ 滚动 · Enter 跳转 · Esc 返回" });
+            const action = await this.terminal.view("Loop 详情 / Details", loopDetails(loop), { actions: ["return"], footer: "↑↓滚动 b/f翻页 g/G首尾 Enter跳转 Esc返回" });
             if (!action) continue;
           }
           try { await focusLoop(loop, this.client); this.jumped = true; return; }
@@ -116,7 +86,7 @@ export class App {
       { label: "关闭：仅使用手动配置的数据目录", value: false },
     ], { initial: config.discoverDataDirs ? 0 : 1 });
     if (!discover) return;
-    const dirs = await this.terminal.inputText("额外 Loop 数据目录，每行一个 / Additional data directories", config.dataDirs.join("\n"), { multiline: true, hint: "填写包含 sessions/ 的数据根目录。不会写入这些目录。" });
+    const dirs = await this.terminal.inputText("额外 Loop 数据目录（可选，每行一个） / Additional data directories", config.dataDirs.join("\n"), { multiline: true, hint: "自动发现开启时留空即可；自定义目录填 sessions/ 上一级（只读）。" });
     if (dirs === null) return;
     try {
       await this.configStore.save({ ...config, discoverDataDirs: discover.value, dataDirs: dirs.split("\n").map(value => value.trim()).filter(Boolean),

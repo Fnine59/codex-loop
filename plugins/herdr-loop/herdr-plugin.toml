@@ -1,6 +1,6 @@
 id = "fnine.codex-loop"
 name = "Codex Loop"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.9.3"
 description = "Read-only Loop overview and one-shot project launch presets."
 platforms = ["macos", "linux"]

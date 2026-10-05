@@ -58,7 +58,9 @@ try {
   const dataRoot = path.join(base, "loop-data");
   await mkdir(path.join(dataRoot, "sessions"), { recursive: true });
   const codexSession = "01234567-89ab-4cde-8fab-0123456789ab";
-  const state = { version: 1, id: "smokeloop", sessionId: codexSession, task: "Smoke fixture only", status: "waiting", runs: 0, createdAt: Date.now(), cwd: base };
+  const detailTail = "SMOKE_PROMPT_TAIL_VISIBLE";
+  const state = { version: 1, id: "smokeloop", sessionId: codexSession,
+    task: `Smoke fixture only ${"完整提示语文字abc ".repeat(160)} ${detailTail}`, status: "waiting", runs: 0, createdAt: Date.now(), cwd: base };
   await writeFile(path.join(dataRoot, "sessions", `${createHash("sha256").update(codexSession).digest("hex")}.json`), JSON.stringify(state));
   const stub = path.join(base, "agent-stub.mjs");
   const captured = path.join(base, "captured.json");
@@ -162,6 +164,32 @@ finally:
     await eventually(async () => { assert.equal((await client.snapshot()).focused_pane_id, moved.move_result.pane.pane_id); });
     await delay(700);
     console.log("✓ Enter in the actual overview popup navigates across Spaces and retains target focus.");
+    clientOutput = "";
+    await client.call(["plugin", "action", "invoke", "overview", "--plugin", "fnine.codex-loop"]);
+    await eventually(async () => { assert.ok(stripVTControlCharacters(clientOutput).includes("Space / Tab")); });
+    attached.stdin.write("d");
+    await eventually(async () => { assert.ok(stripVTControlCharacters(clientOutput).includes("Loop 提示语（完整任务文本）")); });
+    clientOutput = "";
+    attached.stdin.write("f");
+    await eventually(async () => {
+      const visible = stripVTControlCharacters(clientOutput);
+      assert.ok(visible.includes("完整提示语文字abc"), "next prompt page did not render after f");
+      assert.ok(!visible.includes("Loop 提示语（完整任务文本）"), "f did not move past the detail heading");
+    });
+    clientOutput = "";
+    attached.stdin.write("b");
+    await eventually(async () => { assert.ok(stripVTControlCharacters(clientOutput).includes("Loop 提示语"), "previous page did not return after b"); });
+    clientOutput = "";
+    attached.stdin.write("G");
+    await eventually(async () => { assert.ok(stripVTControlCharacters(clientOutput).includes(detailTail), "wrapped prompt tail did not render after Shift+G"); });
+    clientOutput = "";
+    attached.stdin.write("g");
+    await eventually(async () => { assert.ok(stripVTControlCharacters(clientOutput).includes("Loop 提示语"), "detail heading did not return after g"); });
+    attached.stdin.write("\x1b");
+    await delay(700);
+    attached.stdin.write("\x1b");
+    await delay(700);
+    console.log("✓ Aligned overview and complete long prompt render in the real popup; b/f page and g/Shift+G reach both ends.");
     for (const [action, marker] of [["overview", "记录中活跃"], ["launch", "全局命令"], ["settings", "Default command"]]) {
       clientOutput = "";
       await client.call(["plugin", "action", "invoke", action, "--plugin", "fnine.codex-loop"]);

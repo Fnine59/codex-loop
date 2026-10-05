@@ -12,37 +12,99 @@ function cellWidth(char) {
     code >= 0xfe10 && code <= 0xfe6f || code >= 0xff01 && code <= 0xff60 || code >= 0x1f300) ? 2 : 1;
 }
 
-export function clip(value, width) {
-  let result = "";
+const tones = { accent: 36, success: 32, warning: 33, danger: 31, muted: 90 };
+
+// Styles are structured data, never escape sequences supplied by Loop records.
+export function span(text, { tone = null, bold = false, dim = false } = {}) {
+  return { text: String(text ?? ""), tone, bold, dim };
+}
+
+function segments(value) {
+  return (Array.isArray(value) ? value : [value]).map(part =>
+    part && typeof part === "object" ? span(part.text, part) : span(part));
+}
+
+export function lineText(value) {
+  return segments(value).map(part => safeText(part.text)).join("");
+}
+
+export function textWidth(value) {
+  return Array.from(lineText(value)).reduce((width, char) => width + cellWidth(char), 0);
+}
+
+function appendSegment(result, part, text) {
+  const previous = result.at(-1);
+  if (previous && previous.tone === part.tone && previous.bold === part.bold && previous.dim === part.dim) previous.text += text;
+  else result.push({ ...part, text });
+}
+
+function clipSegments(value, width) {
+  if (width < 1) return [];
+  const result = [];
   let used = 0;
-  const clean = safeText(value);
-  for (const char of clean) {
-    const cells = cellWidth(char);
-    if (used + cells > width) return `${result.slice(0, -1)}…`;
-    used += cells;
-    result += char;
+  for (const part of segments(value)) {
+    for (const char of safeText(part.text)) {
+      const cells = cellWidth(char);
+      if (used + cells > width) {
+        while (used + 1 > width && result.length) {
+          const previous = result.at(-1);
+          const chars = Array.from(previous.text);
+          used -= cellWidth(chars.pop());
+          previous.text = chars.join("");
+          if (!previous.text) result.pop();
+        }
+        appendSegment(result, result.at(-1) || part, "…");
+        return result;
+      }
+      appendSegment(result, part, char);
+      used += cells;
+    }
   }
   return result;
 }
 
-export function wrapText(value, width) {
-  const result = [];
-  for (const line of String(value).split("\n")) {
-    let chunk = "", used = 0;
-    for (const char of safeText(line)) {
+export function clip(value, width) { return lineText(clipSegments(value, width)); }
+
+export function padText(value, width, align = "left") {
+  const text = clip(value, width);
+  const padding = " ".repeat(Math.max(0, width - textWidth(text)));
+  return align === "right" ? padding + text : text + padding;
+}
+
+function wrapSegments(value, width) {
+  const result = [[]];
+  let used = 0;
+  width = Math.max(1, width);
+  for (const part of segments(value)) {
+    // Preserve line breaks and blank lines; display tabs without moving the cursor.
+    const text = part.text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ");
+    for (const char of text) {
+      if (char === "\n") { result.push([]); used = 0; continue; }
+      if (!safeText(char)) continue;
       const cells = cellWidth(char);
-      if (used + cells > width) { result.push(chunk); chunk = ""; used = 0; }
-      chunk += char; used += cells;
+      if (used && used + cells > width) { result.push([]); used = 0; }
+      appendSegment(result.at(-1), part, char);
+      used += cells;
     }
-    result.push(chunk);
   }
   return result;
+}
+
+export function wrapText(value, width) { return wrapSegments(value, width).map(lineText); }
+
+function paint(value, width, { selected = false, color = true } = {}) {
+  return clipSegments(value, width).map(part => {
+    const codes = [selected ? 7 : null, part.bold ? 1 : null, part.dim ? 2 : null,
+      color && !selected ? tones[part.tone] : null].filter(Number.isInteger);
+    return codes.length ? `\x1b[${codes.join(";")}m${part.text}\x1b[0m` : part.text;
+  }).join("");
 }
 
 export class Terminal {
-  constructor(input = process.stdin, output = process.stdout) {
+  constructor(input = process.stdin, output = process.stdout, { color = !("NO_COLOR" in process.env) && process.env.TERM !== "dumb" } = {}) {
     this.input = input;
     this.output = output;
+    this.color = color;
     this.queue = [];
     this.waiter = null;
     this.onKey = (str, key = {}) => {
@@ -50,6 +112,7 @@ export class Terminal {
       if (this.waiter) { const resolve = this.waiter; this.waiter = null; resolve(event); }
       else if (this.queue.length < 512) this.queue.push(event);
     };
+    this.onResize = () => this.onKey("", { name: "resize" });
   }
   start() {
     if (!this.input.isTTY || !this.output.isTTY) throw new Error("请在 Herdr 弹窗中打开此入口 / interactive terminal required");
@@ -58,25 +121,27 @@ export class Terminal {
     this.input.setRawMode(true);
     this.input.resume();
     this.input.on("keypress", this.onKey);
+    this.output.on("resize", this.onResize);
     this.output.write("\x1b[?1049h\x1b[?25l");
     this.started = true;
   }
   close() {
     if (!this.started) return;
     this.input.off("keypress", this.onKey);
+    this.output.off("resize", this.onResize);
     this.input.setRawMode(!!this.wasRaw);
     this.input.pause();
     this.output.write("\x1b[?25h\x1b[?1049l");
   }
   get capacity() { return Math.max(3, (this.output.rows || 24) - 8); }
+  get width() { return Math.max(20, (this.output.columns || 80) - 2); }
   render(title, lines, footer = "↑↓ 选择 · Enter 确认 · Esc 返回", selected = -1) {
-    const width = Math.max(20, (this.output.columns || 80) - 2);
+    const width = this.width;
     const rows = this.output.rows || 24;
-    const body = lines.slice(0, Math.max(1, rows - 4)).map((line, index) => {
-      const value = clip(line, width);
-      return index === selected ? `\x1b[7m${value}\x1b[0m` : value;
-    });
-    this.output.write(`\x1b[H\x1b[2J\x1b[1;36m${clip(title, width)}\x1b[0m\r\n\r\n${body.join("\r\n")}\r\n\x1b[${rows};1H\x1b[2m${clip(footer, width)}\x1b[0m`);
+    const body = lines.slice(0, Math.max(1, rows - 4)).map((line, index) => paint(line, width, { selected: index === selected, color: this.color }));
+    const heading = paint(span(title, { tone: "accent", bold: true }), width, { color: this.color });
+    const help = paint(span(footer, { dim: true }), width, { color: this.color });
+    this.output.write(`\x1b[H\x1b[2J${heading}\r\n\r\n${body.join("\r\n")}\r\n\x1b[${rows};1H${help}`);
   }
   async key(timeout = null) {
     if (this.queue.length) return this.queue.shift();
@@ -120,18 +185,27 @@ export class Terminal {
       else if (!key.ctrl && !key.meta && key.str && !/[\x00-\x1f\x7f-\x9f]/.test(key.str) && value.length < 65536) value += key.str;
     }
   }
-  async view(title, lines, { actions = [], footer = "↑↓ 滚动 · Esc 返回" } = {}) {
+  async view(title, lines, { actions = [], footer = "↑↓滚动 b/f翻页 g/G首尾 Esc返回" } = {}) {
     let offset = 0;
+    let wrapped = [], wrapWidth = -1;
     this.queue.length = 0;
     for (;;) {
-      this.render(title, lines.slice(offset, offset + this.capacity), footer);
+      if (wrapWidth !== this.width) {
+        wrapWidth = this.width;
+        wrapped = lines.flatMap(line => wrapSegments(line, wrapWidth));
+      }
+      const lastOffset = Math.max(0, wrapped.length - this.capacity);
+      offset = Math.min(offset, lastOffset);
+      this.render(title, wrapped.slice(offset, offset + this.capacity), footer);
       const key = await this.key();
       if (isCancel(key)) return null;
       if (actions.includes(key.str) || actions.includes(key.name)) return key.str || key.name;
       if (key.name === "up" || key.str === "k") offset = Math.max(0, offset - 1);
-      if (key.name === "down" || key.str === "j") offset = Math.min(Math.max(0, lines.length - this.capacity), offset + 1);
-      if (key.name === "pagedown") offset = Math.min(Math.max(0, lines.length - this.capacity), offset + this.capacity);
-      if (key.name === "pageup") offset = Math.max(0, offset - this.capacity);
+      if (key.name === "down" || key.str === "j") offset = Math.min(lastOffset, offset + 1);
+      if (key.name === "pagedown" || key.str === "f") offset = Math.min(lastOffset, offset + this.capacity);
+      if (key.name === "pageup" || key.str === "b") offset = Math.max(0, offset - this.capacity);
+      if (key.name === "home" || key.str === "g") offset = 0;
+      if (key.name === "end" || key.str === "G") offset = lastOffset;
     }
   }
   async notice(message) { await this.view("提示 / Notice", String(message).split("\n"), { actions: ["return"], footer: "Enter / Esc 返回" }); }

@@ -1,6 +1,6 @@
 {
   "name": "herdr-codex-loop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Independent Herdr plugin for Codex Loop overview and project presets.",

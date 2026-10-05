@@ -45,7 +45,7 @@ command = "fnine.codex-loop.overview"
 description = "Loop overview"
 
 [[keys.command]]
-key = "prefix+shift+p"
+key = "prefix+shift+o"
 type = "plugin_action"
 command = "fnine.codex-loop.launch"
 description = "Loop launch presets"
@@ -56,12 +56,19 @@ description = "Loop launch presets"
 | 操作 | 按键 |
 | --- | --- |
 | 选择 / 跳转会话 | ↑↓ / Enter |
-| 查看详情 | `d` |
+| 查看完整提示语与详情 | `d` |
+| 详情逐行滚动 | ↑↓ 或 k / j |
+| 详情上一页 / 下一页 | b / f |
+| 详情开头 / 末尾 | g / Shift+G |
 | 活跃 / 全部记录 | `a` |
 | 未关联 / 当前 Space | `u` / `w` |
 | 搜索 / 刷新 / 数据来源 | `/` / `r` / `?` |
 | 启动预设 / 全局设置 | `n` / `s` |
 | 返回或关闭 | Esc |
+
+以上按键在插件弹窗中直接使用。字母键单按，`Shift+G` 同时按，不需要 Herdr 前缀或连续按键。详情页也支持带独立导航键的键盘上的 PgUp / PgDn / Home / End。
+
+列表使用对齐的列和轻量列头，数量、状态与详情小标题加粗；执行中为绿色、等待为黄色、失败为红色，未关联位置也会提示。窄窗口优先保留任务列，隐藏的会话位置仍可在底部或详情中查看。详情中的完整 Loop 任务提示语和完成条件按窗口宽度自动换行，保留原有换行，不截断长行。设置 `NO_COLOR` 或使用 `TERM=dumb` 时不输出颜色。
 
 “活跃”指状态文件中的 `waiting`、`launching`、`running`，**不是经过心跳确认的进程存活数**。Herdr 的 Agent 状态另行展示，不能代替 Loop 的状态。离线、限额等待和恢复中的记录不会被擅自改成已结束。
 
@@ -147,6 +154,8 @@ herdr plugin config-dir fnine.codex-loop
 - `${CODEX_HOME:-~/.codex}/plugins/data/codex-loop-*` 中的实际安装数据目录。
 - 全局设置中的额外数据根目录（目录中应有 `sessions/`）。
 
+开启自动发现时，“额外 Loop 数据目录”通常留空即可。只有 Loop 状态保存在其他自定义位置时才需要补充；填写包含 `sessions/` 的上一级目录，每行一个。这些路径用于总览的只读扫描，不会改变新 Loop 的数据保存位置。
+
 可关闭自动发现，仅读取手动配置目录。`PLUGIN_DATA` 不作自动来源，因为调用方可能是 Herdr 插件或其他插件。重复数据根和同一会话记录会合并；不同 Loop 以最新创建时间为准，同一 Loop 副本以文件更新时间为准。缺失目录不报致命错误；损坏文件、未知状态版本显示读取警告。
 
 当前支持 macOS / Linux、本机当前 Herdr server，不跨 SSH 控制远程机器。新版本状态格式需要显式适配，不会修改不认识的文件。
@@ -206,6 +215,10 @@ In launch presets, press `n` to add a project, `e` to edit, `x` to delete only a
 
 The default view lists recorded active Loops (`waiting`, `launching`, `running`) with counts, task, status, runs, next wake time and Space / Tab. Arrow keys select, Enter navigates, `d` opens details, `a` toggles all records, `u` filters unlinked, `w` filters the invoking workspace, `/` searches, `r` refreshes, `?` shows sources, and Escape closes.
 
+These keys are handled inside the plugin popup: press letter keys once, or press `Shift+G` together. No Herdr prefix or repeated key sequence is needed.
+
+Aligned columns and compact labels make the list easier to scan. Counts, status and detail section titles use bold text; running is green, waiting is yellow, failed is red, and unlinked locations are highlighted. Narrow windows prioritize the task column; location remains available below the list and in details. The complete recorded Loop task prompt and completion condition soft-wrap to the window width, preserving explicit line breaks without clipping long lines. In details, use arrows or `k`/`j` to scroll, `b`/`f` to page up/down, and `g`/`Shift+G` to reach the beginning/end. Page Up/Down and Home/End also work on keyboards that have them. Colors are disabled when `NO_COLOR` is set or `TERM=dumb`.
+
 **Recorded active is not a process-liveness guarantee.** State files have no heartbeat. Herdr's agent lifecycle is displayed separately. Ended records are available in the all-records view; the plugin never changes recorded status based on inferred liveness.
 
 Discoverable Loops outside the current Herdr server remain visible as **unlinked**, including external terminals, other named Herdr sessions, and terminals without native session identity. They cannot be navigated to. Matching uses exact native Codex `agent_session` IDs against Loop `sessionId` or `threadId`, never cwd or task-title guesses. Multiple matching terminals are treated as ambiguous. Navigation refreshes the live snapshot to handle cross-workspace pane moves.
@@ -237,6 +250,8 @@ herdr plugin config-dir fnine.codex-loop
 The full version-1 configuration example is in the Chinese section. Use `"prompt": { "kind": "file", "path": "docs/loop-prompt.md" }` for a file source. An empty command override uses the global default. Empty workspace/tab preferences follow the invocation location and may be changed at launch.
 
 Automatic discovery checks `CODEX_LOOP_DATA_DIR`, `~/.codex-loop/plugin-data`, and `${CODEX_HOME:-~/.codex}/plugins/data/codex-loop-*`. Add custom roots containing `sessions/` in global settings, or disable auto-discovery. `PLUGIN_DATA` is deliberately not trusted as a Loop root. Only v1 `sessions/<64-character hash>.json` files are read; no recursive conversation-content scan is performed. Duplicates are merged by session: newer Loop creation wins, then file modification time for copies of the same Loop. Missing roots are tolerated; malformed files and unknown versions appear as warnings.
+
+With auto-discovery enabled, additional Loop data directories can usually stay empty. Add them only for state stored elsewhere, one root per line: use the parent of `sessions/`. These are read-only overview sources and do not change where new Loops save their data.
 
 macOS / Linux, local current Herdr server only. No cross-machine SSH control. Unknown future state schemas require explicit adaptation and are never modified.
 
